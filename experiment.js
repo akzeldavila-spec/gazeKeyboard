@@ -37,6 +37,12 @@ let playerPressedSpace = false;
 let bothPlayersPressedSpace = false;
 let checkingSpacePress = false;
 let sessionCleared = false;
+let experimentWallStartTime = null;
+let decisionTimestampMs = null;
+let decisionLog = [];
+let phaseLog = [];
+let decisionPhaseStartTime = null;
+let partnerDecisionFetched = false;
 
 // Phase tracking array
 let phaseDurations = [];
@@ -249,6 +255,10 @@ function handleKeyPress(event) {
         if (key === ' ') keyPressed = 'space';
     }
 
+    if (key === '7') {
+        savePhaseDurations();
+    }
+
     console.log('Key pressed: ' + keyPressed + ' in phase: ' + currentPhase);
 }
 
@@ -269,11 +279,17 @@ function startPhase(phase) {
     
     currentPhase = phase;
     phaseStartTime = Date.now();
+    phaseLog.push({
+    trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
+    phase: phase,
+    elapsed_ms: experimentWallStartTime ? (Date.now() - experimentWallStartTime) : 'experiment_not_started'
+    });
     
     // Reset decision flag when entering decision phase
     if (phase === 'decision') {
         decisionMade = false;
         decisionUploaded = false;
+        decisionPhaseStartTime = Date.now();
     }
     
     // Reset space press flags when entering instructions phase
@@ -318,6 +334,32 @@ function startPhase(phase) {
         });
         
         console.log('Trial ' + trialManager.getCurrentTrialNumber() + ' - Points earned: ' + pointsEarned);
+
+        // ★ Build log entry — everything below is new
+        let conditionLabel = { 1: 'coordination', 2: 'anticoordination', 3: 'competition' };
+        let elapsedMs = (decisionTimestampMs && experimentWallStartTime)
+            ? (decisionTimestampMs - experimentWallStartTime)
+            : 'no_response';
+
+        decisionLog.push({
+            trial:              trialManager.getCurrentTrialNumber(),
+            phase:              trialManager.getCurrentPhase(),
+            elapsed_ms:         elapsedMs,
+            reaction_time_ms:   (decisionTimestampMs && decisionPhaseStartTime)
+                                    ? (decisionTimestampMs - decisionPhaseStartTime)
+                                    : 'no_response',
+            condition:          conditionLabel[trial.symbol.id] || trial.symbol.id,
+            delta:              trial.chart.delta,
+            scale:              trial.chart.S,
+            chartId:            trial.chartId,
+            choice:             keyPressed || 'none',
+            your_points:        pointsEarned,
+            partner_points:     'pending',
+            server_timestamp:   'pending'
+        });
+
+    decisionTimestampMs = null;
+
     }
     
     console.log('Starting phase: ' + phase);
@@ -381,6 +423,7 @@ function gameLoop() {
             
             if (validChoice) {
                 decisionMade = true;
+                decisionTimestampMs = Date.now();
                 
                 // Upload the decision to Firebase if not already uploaded
                 if (!decisionUploaded && sessionInfo && sessionInfo.sessionId) {
@@ -479,39 +522,24 @@ function renderBaseline() {
 }
 
 function renderSample() {
-    renderLegend();
     let trial = trialManager.getCurrentTrial();
     let img = imageLoader.getChartImage(trial.chartId, 'sample');
 
-    // Determine which axis the decision charts are on
-    let isVertical = (trial.choice1Position === 'up' || trial.choice1Position === 'down');
+    let imgWidth = 256 / 2;
+    let imgHeight = 256 / 2;
 
-    // Place sample charts on the perpendicular axis
-    let samplePos1, samplePos2;
-    if (isVertical) {
-        // Decision is up/down → sample charts go left/right
-        samplePos1 = trialManager.getPositionCoords('left', canvas.width, canvas.height);
-        samplePos2 = trialManager.getPositionCoords('right', canvas.width, canvas.height);
-    } else {
-        // Decision is left/right → sample charts go up/down
-        samplePos1 = trialManager.getPositionCoords('up', canvas.width, canvas.height);
-        samplePos2 = trialManager.getPositionCoords('down', canvas.width, canvas.height);
-    }
-
-    // Draw the sample chart at both positions
+    // Draw single chart in center
     if (img) {
-        drawImage(img, samplePos1.x, samplePos1.y, 256, 256);
-        drawImage(img, samplePos2.x, samplePos2.y, 256, 256);
-    } else {
-        drawText('[Sample Chart ' + trial.chartId + ']', samplePos1.x, samplePos1.y, '20px Arial', 'center');
-        drawText('[Sample Chart ' + trial.chartId + ']', samplePos2.x, samplePos2.y, '20px Arial', 'center');
+        drawImage(img, canvas.width / 2, canvas.height / 2, imgWidth, imgHeight);
     }
 
-    // Display the symbol crosshair in the center as before
-    let symbolImg = imageLoader.getSymbolImage(trial.symbol.id);
-    if (symbolImg) {
-        drawImage(symbolImg, canvas.width / 2, canvas.height / 2, 32, 32);
-    }
+    // Total above image
+    let totalPoints = trial.chart.largerpoints + trial.chart.smallerpoints;
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Total: ' + totalPoints, canvas.width / 2, canvas.height / 2 - imgHeight / 2 - 16);
 }
 
 function renderDelay() {
@@ -543,14 +571,14 @@ function renderDecision() {
     
     // Draw choice 1
     if (choice1Img) {
-        drawImage(choice1Img, pos1.x, pos1.y, 256, 256);
+        drawImage(choice1Img, pos1.x, pos1.y, 256/2, 256/2);
     } else {
         drawText('[Choice 1]', pos1.x, pos1.y, '20px Arial', 'center');
     }
     
     // Draw choice 2
     if (choice2Img) {
-        drawImage(choice2Img, pos2.x, pos2.y, 256, 256);
+        drawImage(choice2Img, pos2.x, pos2.y, 256/2, 256/2);
     } else {
         drawText('[Choice 2]', pos2.x, pos2.y, '20px Arial', 'center');
     }
@@ -618,6 +646,11 @@ function renderFeedback() {
     // Update the last user points entry with calculated points
     if (userPoints.length > 0) {
         userPoints[userPoints.length - 1].pointsEarned = yourPoints;
+    }
+
+    // ★ patch partner points into log once we have them
+    if (decisionLog.length > 0 && partnerChoice) {
+        decisionLog[decisionLog.length - 1].partner_points = otherPlayerPoints;
     }
 
     // --- YOUR CHOICE (left side) ---
@@ -692,50 +725,52 @@ function renderExit() {
     savePhaseDurations();
 }
 
-function renderExit() {
-    drawText('Up arrow pressed\n\nExperiment ended', canvas.width / 2, canvas.height / 2, '32px Arial', 'center');
-}
-
-// Save phase durations to file
 function savePhaseDurations() {
-    let fileContent = 'Phase Duration Report\n';
-    fileContent += '======================\n\n';
-    fileContent += 'Timestamp: ' + new Date().toISOString() + '\n\n';
-    
-    let totalDuration = 0;
-    fileContent += 'Phase Details:\n';
-    fileContent += '--------------\n';
-    
-    for (let i = 0; i < phaseDurations.length; i++) {
-        let entry = phaseDurations[i];
-        fileContent += 'Entry ' + (i + 1) + ':\n';
-        fileContent += '  Phase: ' + entry.phase + '\n';
-        fileContent += '  Duration: ' + entry.duration + 'ms (' + (entry.duration / 1000).toFixed(2) + 's)\n';
-        fileContent += '  Trial: ' + entry.trial + '\n';
-        fileContent += '  Symbol: ' + (entry.symbol !== null ? entry.symbol : 'N/A') + '\n\n';
-        totalDuration += entry.duration;
-    }
-    
-    fileContent += '\nSummary:\n';
-    fileContent += '--------\n';
-    fileContent += 'Total Phases: ' + phaseDurations.length + '\n';
-    fileContent += 'Total Experiment Duration: ' + totalDuration + 'ms (' + (totalDuration / 1000).toFixed(2) + 's)\n';
-    
-    // Add points summary
     let totalPoints = 0;
-    fileContent += '\n\nPoints Summary:\n';
-    fileContent += '---------------\n';
-    for (let i = 0; i < userPoints.length; i++) {
-        let pointEntry = userPoints[i];
-        fileContent += 'Trial ' + pointEntry.trial + ': ' + pointEntry.pointsEarned + ' points (Choice: ' + pointEntry.choice + ')\n';
-        totalPoints += pointEntry.pointsEarned;
+    let rows = [];
+
+    rows.push([
+        'trial', 'phase', 'elapsed_ms', 'reaction_time_ms', 'server_timestamp',
+        'condition', 'delta', 'scale', 'chartId',
+        'choice', 'your_points', 'partner_points'
+    ].join(','));
+
+    for (let i = 0; i < decisionLog.length; i++) {
+        let d = decisionLog[i];
+        rows.push([
+            d.trial, d.phase, d.elapsed_ms, d.reaction_time_ms, d.server_timestamp,
+            d.condition, d.delta, d.scale, d.chartId,
+            d.choice, d.your_points, d.partner_points
+        ].join(','));
+        if (typeof d.your_points === 'number') totalPoints += d.your_points;
     }
-    fileContent += '\nTotal Points Earned: ' + totalPoints + '\n';
-    
-    // Log to browser console only
-    console.log(fileContent);
-    console.log('Phase data object:', phaseDurations);
-    console.log('Points data object:', userPoints);
+
+    rows.push('');
+    rows.push('# experiment_start,' + (experimentWallStartTime ? new Date(experimentWallStartTime).toISOString() : 'unknown'));
+    rows.push('# total_points,' + totalPoints);
+    rows.push('# total_trials,' + decisionLog.length);
+
+    rows.push('');
+    rows.push('');
+    rows.push('--- PHASE LOG ---');
+    rows.push(['trial', 'phase', 'elapsed_ms'].join(','));
+
+    for (let i = 0; i < phaseLog.length; i++) {
+        let p = phaseLog[i];
+        rows.push([p.trial, p.phase, p.elapsed_ms].join(','));
+    }
+
+    let blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a');
+    a.href = url;
+    a.download = 'player' + sessionInfo.playerNum + '_session' + sessionInfo.sessionId + '_decisions.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    console.log('Decision log downloaded. Total points:', totalPoints);
 }
 
 // Upload user decision to Firebase
@@ -765,11 +800,16 @@ function uploadDecisionToFirebase(choice, trial) {
                 .collection('decisions').doc(docRef.id)
                 .get()
                 .then(function(doc) {
-                    if (doc.exists) {
-                        yourDecisionTimestamp = doc.data().timestamp;
-                        console.log('Your decision timestamp recorded:', yourDecisionTimestamp);
+                if (doc.exists) {
+                    yourDecisionTimestamp = doc.data().timestamp;
+                    console.log('Your decision timestamp recorded:', yourDecisionTimestamp);
+
+                // ★ patch server timestamp into log
+                    if (decisionLog.length > 0) {
+                        decisionLog[decisionLog.length - 1].server_timestamp =
+                        yourDecisionTimestamp.toDate().toISOString();
                     }
-                })
+                }})
                 .catch(function(error) {
                     console.error('Error retrieving decision timestamp:', error);
                 });
@@ -951,6 +991,8 @@ function waitForBothPlayersImagesLoaded() {
         if (doc.exists && doc.data().player1_images_loaded && doc.data().player2_images_loaded) {
             console.log('Both players have loaded images! Starting experiment NOW!');
             unsubscribe();
+
+            experimentWallStartTime = Date.now();
             
             startPhase('instructions');
             requestAnimationFrame(gameLoop);
