@@ -338,4 +338,4 @@ class TrialManager {
         this.currentTrialIndex = 0;
         console.log('Trials loaded from Firebase:', this.trialSequence.length, 'trials');
     }
-}
+}Z
