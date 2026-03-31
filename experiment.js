@@ -195,24 +195,24 @@ function waitForTrialSequence() {
     });
 }
 
-// Common function to continue experiment setup after trials are ready
-function proceedWithExperiment() {
-    // Set starting trial index for testing purposes
-    if (CONFIG.startingTrialIndex > 0) {
-        trialManager.currentTrialIndex = CONFIG.startingTrialIndex;
-        console.log('Starting experiment at trial index: ' + CONFIG.startingTrialIndex + ' (Trial ' + trialManager.getCurrentTrialNumber() + ')');
-    }
+// Common function to continue experiment setup after trials are ready - CHANGED MIGHT NEED LATER 
+// function proceedWithExperiment() {
+//     // Set starting trial index for testing purposes
+//     if (CONFIG.startingTrialIndex > 0) {
+//         trialManager.currentTrialIndex = CONFIG.startingTrialIndex;
+//         console.log('Starting experiment at trial index: ' + CONFIG.startingTrialIndex + ' (Trial ' + trialManager.getCurrentTrialNumber() + ')');
+//     }
     
-    // Preload images
-    imageLoader.preloadChartImages(trialManager.charts, function() {
-        console.log('Images loaded, starting experiment');
-        imageLoader.preloadSymbolImages(trialManager.symbols, function() {
-            console.log('Symbols loaded, starting experiment');
-            startPhase('instructions');
-            requestAnimationFrame(gameLoop);
-        });
-    });
-}
+//     // Preload images
+//     imageLoader.preloadChartImages(trialManager.charts, function() {
+//         console.log('Images loaded, starting experiment');
+//         imageLoader.preloadSymbolImages(trialManager.symbols, function() {
+//             console.log('Symbols loaded, starting experiment');
+//             startPhase('instructions');
+//             requestAnimationFrame(gameLoop);
+//         });
+//     });
+// }
 
 // Get synchronized time across both clients
 function getSynchronizedTime() {
@@ -297,11 +297,6 @@ function startPhase(phase) {
         playerPressedSpace = false;
         bothPlayersPressedSpace = false;
         checkingSpacePress = false;
-        // Reset Firebase flags for both players
-        db.collection('sessions').doc(sessionInfo.sessionId).set({
-            player1_ready: false,
-            player2_ready: false
-        }, { merge: true });
     }
     
     // Reset partner decision fetch flag when entering feedback phase
@@ -991,6 +986,11 @@ function waitForBothPlayersImagesLoaded() {
         if (doc.exists && doc.data().player1_images_loaded && doc.data().player2_images_loaded) {
             console.log('Both players have loaded images! Starting experiment NOW!');
             unsubscribe();
+            
+            db.collection('sessions').doc(sessionInfo.sessionId).set({
+                player1_ready: false,
+                player2_ready: false
+            }, { merge: true });
 
             experimentWallStartTime = Date.now();
             
