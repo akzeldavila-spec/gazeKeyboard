@@ -67,7 +67,7 @@ function init() {
     ctx = canvas.getContext('2d');
     
     // Set up keyboard listener
-    document.addEventListener('keydown', handleKeyPress);
+    // MIGHT NEED THIS AGAIN document.addEventListener('keydown', handleKeyPress);
     
     // Display waiting screen and wait for both players
     displayWaitingScreen();
@@ -994,8 +994,14 @@ function waitForBothPlayersImagesLoaded() {
 
             experimentWallStartTime = Date.now();
             
-            startPhase('instructions');
+            let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
+            instrPhase.start(function() {
+            // Re-attach the main key handler only after instructions finish
+            document.addEventListener('keydown', handleKeyPress);
+            experimentWallStartTime = Date.now();
+            startPhase('instructions');       // existing "waiting for partner to press SPACE" screen
             requestAnimationFrame(gameLoop);
+             });
         } else {
             console.log('Waiting for other player to finish loading images...');
         }
