@@ -512,7 +512,7 @@ function gameLoop() {
         if (elapsed >= CONFIG.baselineDuration) {
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
-                startPhase('lottery'); // MUST CHANGE THIS TO ALTER PHASE - OG:sample
+                startPhase('sample'); // MUST CHANGE THIS TO ALTER PHASE - OG:sample
             } else {
                 startPhase('complete');
             }
