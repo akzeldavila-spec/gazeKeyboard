@@ -50,13 +50,35 @@ let phaseDurations = [];
 // Points tracking array
 let userPoints = [];
 
-// Initialize the experiment
+// Initialize the experiment - OLD
+// function init() {
+//     console.log('Initializing experiment...');
+//     sessionInfo = getSessionInfo();
+//     console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);  
+    
+//     // Create canvas
+//     canvas = document.createElement('canvas');
+//     canvas.width = CONFIG.canvasWidth;
+//     canvas.height = CONFIG.canvasHeight;
+//     canvas.style.display = 'block';
+//     canvas.style.margin = '0 auto';
+//     canvas.style.backgroundColor = CONFIG.backgroundColor;
+//     document.getElementById('root').appendChild(canvas);
+//     ctx = canvas.getContext('2d');
+    
+//     // Set up keyboard listener
+//     // MIGHT NEED THIS AGAIN document.addEventListener('keydown', handleKeyPress);
+    
+//     // Display waiting screen and wait for both players
+//     displayWaitingScreen();
+    
+//     // Check if both players are ready
+//     checkPlayersReady();
+// }
 function init() {
     console.log('Initializing experiment...');
-    sessionInfo = getSessionInfo();
-    console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);  
-    
-    // Create canvas
+ 
+    // Create canvas FIRST — needed before InstructionPhase can render
     canvas = document.createElement('canvas');
     canvas.width = CONFIG.canvasWidth;
     canvas.height = CONFIG.canvasHeight;
@@ -65,15 +87,31 @@ function init() {
     canvas.style.backgroundColor = CONFIG.backgroundColor;
     document.getElementById('root').appendChild(canvas);
     ctx = canvas.getContext('2d');
-    
-    // Set up keyboard listener
-    // MIGHT NEED THIS AGAIN document.addEventListener('keydown', handleKeyPress);
-    
-    // Display waiting screen and wait for both players
-    displayWaitingScreen();
-    
-    // Check if both players are ready
-    checkPlayersReady();
+ 
+    // Create managers needed for the demo
+    trialManager = new TrialManager();
+    imageLoader  = new ImageLoader();
+    trialManager.generateTrials();
+ 
+    // Preload images, then run the demo
+    imageLoader.preloadChartImages(trialManager.charts, function() {
+        imageLoader.preloadSymbolImages(trialManager.symbols, function() {
+            let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
+            instrPhase.start(function() {
+                // Demo done → run quiz
+                let quizPhase = new QuizPhase(canvas, ctx, imageLoader, trialManager);
+                quizPhase.start(function() {
+                    // Quiz done → now ask for session info
+                    sessionInfo = getSessionInfo();
+                    console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);
+                    displayWaitingScreen();
+                    registerPlayerInSession();
+                    checkPlayersReady();
+                });
+            });
+
+        });
+    });
 }
 
 function displayWaitingScreen() {
@@ -867,11 +905,6 @@ function drawImage(img, x, y, width, height) {
     ctx.drawImage(img, x - width / 2, y - height / 2, width, height);
 }
 
-// Start when page loads
-window.addEventListener('load', function() {
-    init();
-    registerPlayerInSession();
-});
 
 function getSessionInfo() {
     let sessionId = prompt("Enter Session ID (both players use same ID):");
@@ -986,31 +1019,37 @@ function waitForBothPlayersImagesLoaded() {
         if (doc.exists && doc.data().player1_images_loaded && doc.data().player2_images_loaded) {
             console.log('Both players have loaded images! Starting experiment NOW!');
             unsubscribe();
-            
+ 
             db.collection('sessions').doc(sessionInfo.sessionId).set({
                 player1_ready: false,
                 player2_ready: false
             }, { merge: true });
-
+ 
             experimentWallStartTime = Date.now();
-            
-            let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
-            instrPhase.start(function() {
-            // Re-attach the main key handler only after instructions finish
+ 
+            // Re-attach the main key handler and start the game loop.
+            // The 'instructions' phase (waiting for both players to press SPACE)
+            // is still the first real phase — it just no longer shows the demo.
             document.addEventListener('keydown', handleKeyPress);
-            experimentWallStartTime = Date.now();
-            startPhase('instructions');       // existing "waiting for partner to press SPACE" screen
+            startPhase('instructions');
             requestAnimationFrame(gameLoop);
-             });
+ 
         } else {
             console.log('Waiting for other player to finish loading images...');
         }
     });
 }
-
+ 
+// Also remove the registerPlayerInSession() call from the window load listener
+// since it's now called inside init() after the demo completes.
+window.addEventListener('load', function() {
+    init();
+});
 window.addEventListener('beforeunload', function() {
     clearSession();
 });
+
+
 function renderLegend() {
     let symbols = trialManager.symbols;
     let labels = {

@@ -13,7 +13,7 @@ class InstructionPhase {
     // ───────────────────────────────────────────────────────────────────────────
     static DEMO_TRIALS = [
         {
-            conditionLabel:   'Coordination (+)',
+            conditionLabel:   'Same (+)',
             symbolId:         1,                    // + symbol
             chartId:          'delta05_S8',          // 6 vs 2 points
             choice1Position:  'left',
@@ -21,14 +21,14 @@ class InstructionPhase {
             yourChoice:       'left',               // ← edit freely
             partnerChoice:    'right',              // ← edit freely
             descriptionLines: [
-                'COORDINATION  (+)',
+                'SAME SLICE  (+)',
                 '',
-                'You and your partner must pick DIFFERENT slices.',
+                'You and your partner must pick SAME slices.',
                 'Only then do both players earn points.',
             ],
         },
         {
-            conditionLabel:   'Anti-coordination (×)',
+            conditionLabel:   'Difference (×)',
             symbolId:         2,                    // × symbol
             chartId:          'delta05_S8',
             choice1Position:  'up',
@@ -36,14 +36,14 @@ class InstructionPhase {
             yourChoice:       'up',                 // ← edit freely
             partnerChoice:    'up',                 // ← edit freely (same = points for anti-coord)
             descriptionLines: [
-                'ANTI-COORDINATION  (×)',
+                'DIFFERENT SLICES (×)',
                 '',
-                'You and your partner must pick the SAME slice.',
+                'You and your partner must pick the DIFFERENT slice.',
                 'Only then do both players earn points.',
             ],
         },
         {
-            conditionLabel:   'Competition (△)',
+            conditionLabel:   'QUICKER (△)',
             symbolId:         3,                    // △ symbol
             chartId:          'delta05_S8',
             choice1Position:  'left',
@@ -51,7 +51,7 @@ class InstructionPhase {
             yourChoice:       'left',               // ← edit freely
             partnerChoice:    'right',              // ← edit freely
             descriptionLines: [
-                'COMPETITION  (△)',
+                'QUICKER SLICE  (△)',
                 '',
                 'Only the FIRST player to choose earns points.',
                 'In this demo you respond first.',
@@ -257,7 +257,11 @@ class InstructionPhase {
     _renderLegend() {
         let ctx      = this.ctx;
         let symbols  = this.trialManager.symbols;
-        let labels   = { 1: 'Coordination', 2: 'Anticoordination', 3: 'Competition' };
+        let labels = {
+            1: 'Anticoordination',
+            2: 'Coordination',
+            3: 'Competition'
+        };
         let iconSize = 24, rowH = 32, x = 10;
         let startY   = this.canvas.height - symbols.length * rowH - 10;
         symbols.forEach((s, i) => {
