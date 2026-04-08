@@ -50,31 +50,24 @@ let phaseDurations = [];
 // Points tracking array
 let userPoints = [];
 
-// Initialize the experiment - OLD
-// function init() {
-//     console.log('Initializing experiment...');
-//     sessionInfo = getSessionInfo();
-//     console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);  
-    
-//     // Create canvas
-//     canvas = document.createElement('canvas');
-//     canvas.width = CONFIG.canvasWidth;
-//     canvas.height = CONFIG.canvasHeight;
-//     canvas.style.display = 'block';
-//     canvas.style.margin = '0 auto';
-//     canvas.style.backgroundColor = CONFIG.backgroundColor;
-//     document.getElementById('root').appendChild(canvas);
-//     ctx = canvas.getContext('2d');
-    
-//     // Set up keyboard listener
-//     // MIGHT NEED THIS AGAIN document.addEventListener('keydown', handleKeyPress);
-    
-//     // Display waiting screen and wait for both players
-//     displayWaitingScreen();
-    
-//     // Check if both players are ready
-//     checkPlayersReady();
-// }
+// Lottery phase state
+let lotteryTrialIndex = null;
+let lotteryYourPoints = null;
+let lotteryPartnerPoints = null;
+let lotteryPartnerFetched = false;
+
+// Seeded random using session ID (ensures same trial for both players)
+function seededRandom(seed) {
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+        hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+        hash |= 0;
+    }
+
+    hash = Math.abs(hash);
+    return (hash * 1664525 + 1013904223) & 0xffffffff;
+}
+
 function init() {
     console.log('Initializing experiment...');
  
@@ -253,6 +246,7 @@ function waitForTrialSequence() {
 // }
 
 // Get synchronized time across both clients
+
 function getSynchronizedTime() {
     return Date.now() + clientServerTimeDiff;
 }
@@ -290,6 +284,9 @@ function handleKeyPress(event) {
         else if (key === 'arrowup') keyPressed = 'up';
         else if (key === 'arrowdown') keyPressed = 'down';
     } else if (currentPhase === 'instructions') {
+        if (key === ' ') keyPressed = 'space';
+    }
+     else if (currentPhase === 'lottery') {
         if (key === ' ') keyPressed = 'space';
     }
 
@@ -491,14 +488,16 @@ function gameLoop() {
         }
         
         renderFeedback();
+
         if (elapsed >= CONFIG.feedbackDuration) {
             trialManager.nextTrial();
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
                 startPhase('postFeedbackDelay');
             } else {
-                startPhase('complete');
+                startPhase('lottery');
             }
+            
         }
         
     } else if (currentPhase === 'postFeedbackDelay') {
@@ -513,13 +512,26 @@ function gameLoop() {
         if (elapsed >= CONFIG.baselineDuration) {
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
-                startPhase('sample');
+                startPhase('lottery'); // MUST CHANGE THIS TO ALTER PHASE - OG:sample
             } else {
                 startPhase('complete');
             }
         }
         
-    } else if (currentPhase === 'complete') {
+    } else if (currentPhase === 'lottery') {
+            if (lotteryTrialIndex === null) {
+                let seed = seededRandom(sessionInfo.sessionId);
+                lotteryTrialIndex = seed % trialManager.trialSequence.length;
+                console.log('Lottery trial index:', lotteryTrialIndex, '(Trial ' + (lotteryTrialIndex + 1) + ')');
+            }
+            renderLottery();
+            if (keyPressed === 'space') {
+                keyPressed = '';
+                startPhase('complete');
+            }
+
+        } 
+    else if (currentPhase === 'complete') {
         renderComplete();
         return;
         
@@ -1053,9 +1065,9 @@ window.addEventListener('beforeunload', function() {
 function renderLegend() {
     let symbols = trialManager.symbols;
     let labels = {
-        1: 'Coordination',
-        2: 'Anticoordination', 
-        3: 'Competition'
+        1: 'Different',
+        2: 'Same', 
+        3: 'Quicker'
     };
 
     let iconSize = 24;
@@ -1078,6 +1090,81 @@ function renderLegend() {
         ctx.fillText(labels[symbols[i].id], startX + iconSize + 8, y + iconSize / 2);
     }
 }
+function renderLottery() {
+    let cx = canvas.width / 2;
+    let cy = canvas.height / 2;
+
+    if (!lotteryPartnerFetched) {
+        lotteryPartnerFetched = true;
+
+        let otherPlayerNum = sessionInfo.playerNum === 1 ? 2 : 1;
+        let lotteryTrialNumber = lotteryTrialIndex + 1;
+
+        db.collection('sessions').doc(sessionInfo.sessionId)
+            .collection('decisions')
+            .where('playerNum', '==', otherPlayerNum)
+            .where('trialNumber', '==', lotteryTrialNumber)
+            .limit(1)
+            .get()
+            .then(function(snapshot) {
+                if (!snapshot.empty) {
+                    let data = snapshot.docs[0].data();
+                    let trial = trialManager.trialSequence[lotteryTrialIndex];
+                    let points1 = trial.chart.largerpoints;
+                    let points2 = trial.chart.smallerpoints;
+                    lotteryPartnerPoints = (data.choice === trial.choice1Position) ? points1 : points2;
+                } else {
+                    lotteryPartnerPoints = 0;
+                }
+            });
+
+        let myEntry = decisionLog.find(function(d) { return d.trial === lotteryTrialIndex + 1; });
+        lotteryYourPoints = myEntry ? myEntry.your_points : 0;
+    }
+
+    let trial = trialManager.trialSequence[lotteryTrialIndex];
+    let sampleImg = imageLoader.getChartImage(trial.chartId, 'sample');
+    let symImg = imageLoader.getSymbolImage(trial.symbol.id);
+
+    // Header
+    drawText('Payment Trial', cx, 60, 'bold 32px Arial', 'center');
+    drawText(
+        'Trial ' + (lotteryTrialIndex + 1) + ' was randomly selected to determine your payment.',
+        cx, 120, '20px Arial', 'center'
+    );
+
+    // Sample chart
+    if (sampleImg) {
+        drawImage(sampleImg, cx, 280, 160, 160);
+    }
+
+    // Cue symbol below chart
+    if (symImg) {
+        drawImage(symImg, cx, 390, 36, 36);
+    }
+
+    // Which slice they picked
+    let myEntry = decisionLog.find(function(d) { return d.trial === lotteryTrialIndex + 1; });
+    if (myEntry && myEntry.choice !== 'none') {
+        let slicePoints = (myEntry.choice === trial.choice1Position)
+            ? trial.chart.largerpoints
+            : trial.chart.smallerpoints;
+        drawText('You picked the slice worth ' + slicePoints + ' points.', cx, 460, '22px Arial', 'center');
+    }
+
+    // Points earned
+    if (lotteryYourPoints !== null) {
+        drawColoredText('You earned: ' + lotteryYourPoints + ' points', canvas.width / 3, 540, '26px Arial', 'center', '#006400');
+    }
+    if (lotteryPartnerPoints !== null) {
+        drawColoredText('Other player earned: ' + lotteryPartnerPoints + ' points', canvas.width * 2 / 3, 540, '26px Arial', 'center', '#4B0082');
+    } else {
+        drawColoredText('Other player earned: loading...', canvas.width * 2 / 3, 540, '26px Arial', 'center', '#4B0082');
+    }
+
+    drawText('Press SPACE to continue', cx, 620, '20px Arial', 'center');
+}
+
 function drawColoredText(text, x, y, font, align, color) {
     ctx.fillStyle = color;
     ctx.font = font;

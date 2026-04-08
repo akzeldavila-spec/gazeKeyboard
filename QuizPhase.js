@@ -266,7 +266,7 @@ class QuizPhase {
             this._errorMsg = '';
             this._setState('correct');
         } else {
-            this._errorMsg = '✗  Incorrect. The answer was ' + q.correctPoints + ' pts.  Try again.';
+            this._errorMsg = '✗  Incorrect. Try again.';
             this._inputEl.value = '';
             this._setState('wrong');
         }
@@ -337,23 +337,6 @@ class QuizPhase {
     _renderQuestion() {
         let q   = this._currentQ();
         let ctx = this.ctx, w = this.canvas.width, h = this.canvas.height;
-
-        // ── Top bar: condition label + progress ──
-        ctx.fillStyle = '#222222';
-        ctx.fillRect(0, 0, w, 40);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 16px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(q.conditionLabel, w / 2, 20);
-
-        ctx.textAlign = 'right';
-        ctx.font = '13px Arial';
-        ctx.fillText(
-            'Question ' + (this._qIdx + 1) + ' / ' + QuizPhase.QUESTIONS.length,
-            w - 12, 20
-        );
-
         // ── Symbol icon (top-left) ──
         let symImg = this.imageLoader.getSymbolImage(q.symbolId);
         if (symImg) ctx.drawImage(symImg, 12, 52, 32, 32);

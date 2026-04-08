@@ -53,7 +53,8 @@ class InstructionPhase {
             descriptionLines: [
                 'QUICKER SLICE  (△)',
                 '',
-                'Only the FIRST player to choose earns points.',
+                'You can choose whatever you want but if the other player has chosen it you cannot pick it anymore.',
+                'First come first serve',
                 'In this demo you respond first.',
             ],
         },
@@ -64,7 +65,8 @@ class InstructionPhase {
     // ── TEXT PAGES SHOWN BEFORE THE DEMOS ──────────────────────────────────────
     static INTRO_PAGES = [
         'Welcome to the experiment!\n\nYou and a partner will see a pie chart\nshowing how points can be split between you.\n\nUse the ARROW KEYS to choose a colored slice.\n\nPress SPACE to continue.',
-        'There are three types of trials.\nEach trial type is shown by a different cue symbol.\nThe cue tells you the rules for earning points.\n\nPress SPACE to see each game type.',
+        'There are three types of trials.\nEach trial type is shown by a different cue symbol.\nThe cue tells you the rules for earning points.',
+        'In this demo you will be able to see your own choice\n AND your partners choice highlighted during the decision phase.\nThis will not be the case in the actual experiment.\n\n\nPress SPACE to see each game type.',
     ];
     // ───────────────────────────────────────────────────────────────────────────
 
@@ -258,9 +260,9 @@ class InstructionPhase {
         let ctx      = this.ctx;
         let symbols  = this.trialManager.symbols;
         let labels = {
-            1: 'Anticoordination',
-            2: 'Coordination',
-            3: 'Competition'
+            1: 'Different',
+            2: 'Same',
+            3: 'Quicker'
         };
         let iconSize = 24, rowH = 32, x = 10;
         let startY   = this.canvas.height - symbols.length * rowH - 10;
@@ -383,6 +385,18 @@ class InstructionPhase {
             ctx.textAlign    = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('YOU', yourPos.x, yourPos.y + 80);
+
+            // Partner choice — purple border
+            let partnerPos = this.trialManager.getPositionCoords(demo.partnerChoice, w, h);
+            ctx.strokeStyle = '#4B0082';
+            ctx.lineWidth   = 4;
+            ctx.strokeRect(partnerPos.x - 68, partnerPos.y - 68, 136, 136);
+            ctx.fillStyle    = '#4B0082';
+            ctx.font         = 'bold 14px Arial';
+            ctx.textAlign    = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('PARTNER', partnerPos.x, partnerPos.y + 80);
+
         }
     }
 
