@@ -102,8 +102,8 @@ class TrialManager {
         ];
 
         this.symbols = [
-            { id: 1, path: 'stimuli/Anticoordination.png' },  // was Coordination
-            { id: 2, path: 'stimuli/Coordination.png' },       // was Anticoordination
+            { id: 1, path: 'stimuli/Anticoordination.png' },  // × icon — different choices earn
+            { id: 2, path: 'stimuli/Coordination.png' },       // + icon — same choice earns
             { id: 3, path: 'stimuli/Compete.png' }
         ];
 

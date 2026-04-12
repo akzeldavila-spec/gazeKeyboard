@@ -366,7 +366,7 @@ function startPhase(phase) {
         console.log('Trial ' + trialManager.getCurrentTrialNumber() + ' - Points earned: ' + pointsEarned);
 
         // ★ Build log entry — everything below is new
-        let conditionLabel = { 1: 'coordination', 2: 'anticoordination', 3: 'competition' };
+        let conditionLabel = { 1: 'anticoordination', 2: 'coordination', 3: 'competition' };
         let elapsedMs = (decisionTimestampMs && experimentWallStartTime)
             ? (decisionTimestampMs - experimentWallStartTime)
             : 'no_response';

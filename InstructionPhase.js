@@ -14,12 +14,12 @@ class InstructionPhase {
     static DEMO_TRIALS = [
         {
             conditionLabel:   'Same (+)',
-            symbolId:         1,                    // + symbol
+            symbolId:         2,                    // + symbol
             chartId:          'delta05_S8',          // 6 vs 2 points
             choice1Position:  'left',
             choice2Position:  'right',
             yourChoice:       'left',               // ← edit freely
-            partnerChoice:    'right',              // ← edit freely
+            partnerChoice:    'left',               // ← edit freely (same = earns for coordination)
             descriptionLines: [
                 'SAME SLICE  (+)',
                 '',
@@ -29,12 +29,12 @@ class InstructionPhase {
         },
         {
             conditionLabel:   'Difference (×)',
-            symbolId:         2,                    // × symbol
+            symbolId:         1,                    // × symbol
             chartId:          'delta05_S8',
             choice1Position:  'up',
             choice2Position:  'down',
             yourChoice:       'up',                 // ← edit freely
-            partnerChoice:    'up',                 // ← edit freely (same = points for anti-coord)
+            partnerChoice:    'down',               // ← edit freely (different = earns for anti-coord)
             descriptionLines: [
                 'DIFFERENT SLICES (×)',
                 '',
@@ -417,12 +417,12 @@ class InstructionPhase {
 
         // Calculate points using same rules as experiment.js renderFeedback
         let yourPoints = 0, partnerPoints = 0;
-        if (sid === 1) {            // coordination: need DIFFERENT choices
+        if (sid === 1) {            // anti-coord: need DIFFERENT choices
             if (yc !== pc) {
                 yourPoints    = (yc === c1) ? p1 : p2;
                 partnerPoints = (pc === c1) ? p1 : p2;
             }
-        } else if (sid === 2) {     // anti-coord: need SAME choice
+        } else if (sid === 2) {     // coordination: need SAME choice
             if (yc === pc) {
                 yourPoints    = (yc === c1) ? p1 : p2;
                 partnerPoints = yourPoints;

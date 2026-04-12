@@ -14,8 +14,8 @@ class QuizPhase {
     //   choice2Position maps to smallerpoints.
     //
     // correctPoints is computed from the condition rules:
-    //   Coordination   (1): DIFFERENT choices → both earn points
-    //   Anti-coord     (2): SAME choice       → both earn points
+    //   Anti-coord     (1): DIFFERENT choices → both earn points
+    //   Coordination   (2): SAME choice       → both earn points
     //   Competition    (3): FIRST to choose   → only that player earns points
     // ───────────────────────────────────────────────────────────────────────────
     static QUESTIONS = [
