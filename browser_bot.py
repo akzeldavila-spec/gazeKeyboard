@@ -25,10 +25,6 @@ Quick-start:
     python3 browser_bot.py test1 2
 
     # 3. Open http://localhost:8080 in your own browser and enter the same session ID
-
-Install deps (one-time):
-    pip install playwright
-    playwright install chromium
 """
 
 import argparse
