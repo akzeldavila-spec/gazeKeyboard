@@ -297,6 +297,22 @@ function handleKeyPress(event) {
     console.log('Key pressed: ' + keyPressed + ' in phase: ' + currentPhase);
 }
 
+// Returns the exact configured duration for auto-timed phases so that
+// fixed-increment timing can be used instead of Date.now() snapshots.
+// Returns null for player-triggered phases (instructions, lottery) which
+// must reset to wall-clock time.
+function getConfiguredPhaseDuration(phase) {
+    switch (phase) {
+        case 'baseline':          return CONFIG.baselineDuration;
+        case 'sample':            return CONFIG.sampleDuration;
+        case 'delay':             return CONFIG.delayDuration;
+        case 'decision':          return CONFIG.decisionDuration;
+        case 'feedback':          return CONFIG.feedbackDuration;
+        case 'postFeedbackDelay': return CONFIG.postFeedbackDelayDuration;
+        default:                  return null;
+    }
+}
+
 // Start a new phase
 function startPhase(phase) {
     // Record the duration of the previous phase
@@ -311,9 +327,21 @@ function startPhase(phase) {
         });
         console.log('Phase "' + currentPhase + '" lasted ' + phaseDuration + 'ms');
     }
-    
+
     currentPhase = phase;
-    phaseStartTime = Date.now();
+
+    // Fixed-increment timing: advance phaseStartTime by the exact configured
+    // duration of the previous phase rather than snapping to Date.now().
+    // This prevents per-frame overshoots (~16 ms at 60 fps) from accumulating
+    // into drift across hundreds of trials.  Player-triggered phases
+    // (instructions, lottery) have no fixed duration so we reset to wall clock.
+    let prevPhaseName = phaseDurations.length > 0 ? phaseDurations[phaseDurations.length - 1].phase : null;
+    let prevPhaseConfiguredDuration = getConfiguredPhaseDuration(prevPhaseName);
+    if (phaseStartTime > 0 && prevPhaseConfiguredDuration !== null) {
+        phaseStartTime = phaseStartTime + prevPhaseConfiguredDuration;
+    } else {
+        phaseStartTime = Date.now();
+    }
     phaseLog.push({
     trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
     phase: phase,
@@ -324,7 +352,7 @@ function startPhase(phase) {
     if (phase === 'decision') {
         decisionMade = false;
         decisionUploaded = false;
-        decisionPhaseStartTime = Date.now();
+        decisionPhaseStartTime = phaseStartTime;
     }
     
     // Reset space press flags when entering instructions phase
