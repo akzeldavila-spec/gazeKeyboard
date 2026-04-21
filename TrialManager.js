@@ -164,48 +164,62 @@ class TrialManager {
         this.trialSequence = [];
 
         // --- PHASE 1: Training (120 trials) ---
-        // Charts: delta=0,S=8 | delta=0.5,S=8 | delta=0,S=16 | delta=0.5,S=16
-        // 4 charts x 4 position combos x 3 symbols x 5 repeats
-        // But: 4 charts * 4 pos * 3 symbols * 5 reps = 240, too many.
-        // Per image: 4 (trial types) * 3 (conditions) * 2 (location counterbalance) * 5 (repeats) = 120
-        // "2 location counterbalance" means 2 position combos per axis (one axis per block variant)
-        // Simplest reading: 4 chart types * 3 symbols * 2 pos combos * 5 reps = 120
-        // Use 2 position combos (e.g. [up,down] and [left,right] — one per axis, not all 4)
-        let phase1Trials = this.generatePhase1Block(
-            ['delta0_S8', 'delta05_S8', 'delta0_S16', 'delta05_S16'],
-            5
-        );
+        let phase1ChartIds = ['delta0_S8', 'delta05_S8', 'delta0_S16', 'delta05_S16'];
+        let phase1Trials = this.generatePhase1Block(phase1ChartIds, 5);
         this.phase1Start = 0;
 
+        // --- CATCH TRIALS (2 trials, between phase 1 and phase 2) ---
+        let catchTrials = this.generateCatchTrials(phase1ChartIds);
+
         // --- PHASE 2: Testing (120 trials) ---
-        // 4 chart types: delta025_S8, delta025_S16, delta075_S16, delta05_S32
-        // 4 * 3 * 2 * 5 = 120
         let phase2Trials = this.generatePhase1Block(
             ['delta025_S8', 'delta025_S16', 'delta075_S16', 'delta05_S32'],
             5
         );
-        this.phase2Start = phase1Trials.length;
+        this.phase2Start = phase1Trials.length + catchTrials.length;
 
         // --- PHASE 3: Replication/drift check (60 trials) ---
-        // 2 chart types: delta0_S16, delta05_S8
-        // 2 * 3 * 2 * 5 = 60
         let phase3Trials = this.generatePhase1Block(
             ['delta0_S16', 'delta05_S8'],
             5
         );
-        this.phase3Start = phase1Trials.length + phase2Trials.length;
+        this.phase3Start = phase1Trials.length + catchTrials.length + phase2Trials.length;
 
-        this.trialSequence = [...phase1Trials, ...phase2Trials, ...phase3Trials];
+        this.trialSequence = [...phase1Trials, ...catchTrials, ...phase2Trials, ...phase3Trials];
         this.currentTrialIndex = 0;
 
         console.log('Trial sequence generated:',
             'Phase 1:', phase1Trials.length, 'trials |',
+            'Catch:', catchTrials.length, 'trials |',
             'Phase 2:', phase2Trials.length, 'trials |',
             'Phase 3:', phase3Trials.length, 'trials |',
             'Total:', this.trialSequence.length
         );
 
         return this.trialSequence;
+    }
+
+    // Generate 2 catch trials using random charts from phase 1
+    generateCatchTrials(phase1ChartIds) {
+        let positionCombos = [['up', 'down'], ['left', 'right']];
+        let catchTrials = [];
+        for (let i = 0; i < 2; i++) {
+            let chartId = phase1ChartIds[Math.floor(Math.random() * phase1ChartIds.length)];
+            let chart = this.getChart(chartId);
+            let symbol = this.symbols[Math.floor(Math.random() * this.symbols.length)];
+            let posCombo = positionCombos[Math.floor(Math.random() * positionCombos.length)];
+            catchTrials.push({
+                chartId: chart.id,
+                chart: chart,
+                choice1Position: posCombo[0],
+                choice2Position: posCombo[1],
+                symbol: symbol,
+                repetition: 0,
+                isCatchTrial: true,
+                catchKey: 'g'
+            });
+        }
+        return catchTrials;
     }
 
     // Generate a phase block using 2 location counterbalance (1 per axis)
@@ -317,7 +331,9 @@ class TrialManager {
             choice1Position: trial.choice1Position,
             choice2Position: trial.choice2Position,
             symbolId: trial.symbol.id,
-            repetition: trial.repetition
+            repetition: trial.repetition,
+            isCatchTrial: trial.isCatchTrial || false,
+            catchKey: trial.catchKey || null
         }));
     }
 
@@ -331,9 +347,27 @@ class TrialManager {
                 choice1Position: trialData.choice1Position,
                 choice2Position: trialData.choice2Position,
                 symbol: this.symbols.find(s => s.id === trialData.symbolId),
-                repetition: trialData.repetition
+                repetition: trialData.repetition,
+                isCatchTrial: trialData.isCatchTrial || false,
+                catchKey: trialData.catchKey || null
             };
         });
+
+        // Recompute phase boundaries from the loaded sequence
+        let firstCatch = -1, lastCatch = -1;
+        for (let i = 0; i < this.trialSequence.length; i++) {
+            if (this.trialSequence[i].isCatchTrial) {
+                if (firstCatch === -1) firstCatch = i;
+                lastCatch = i;
+            }
+        }
+        if (firstCatch !== -1) {
+            this.phase2Start = lastCatch + 1;
+            this.phase3Start = this.phase2Start + 120;
+        } else {
+            this.phase2Start = 120;
+            this.phase3Start = 240;
+        }
 
         this.currentTrialIndex = 0;
         console.log('Trials loaded from Firebase:', this.trialSequence.length, 'trials');

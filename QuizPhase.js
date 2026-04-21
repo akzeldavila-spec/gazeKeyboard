@@ -63,17 +63,17 @@ class QuizPhase {
         {
             conditionLabel: 'Different (×)',
             symbolId:       1,
-            chartId:        'delta025_S8',      // 5 vs 3
+            chartId:        'delta05_S8',       // 6 vs 2
             choice1Position:'up',
             choice2Position:'down',
             yourChoice:     'up',               // different from partner → succeeds
             partnerChoice:  'down',
             youFirst:       false,
-            correctPoints:  5,
+            correctPoints:  6,
             scenarioLines: [
                 'The cue is  ×  (Different).',
-                'You picked the UP slice  (worth 5 pts).',
-                'Your partner picked the DOWN slice  (worth 3 pts).',
+                'You picked the UP slice  (worth 6 pts).',
+                'Your partner picked the DOWN slice  (worth 2 pts).',
                 'Your partner chose first.',
                 '',
                 'How many points did YOU earn?',
@@ -141,7 +141,7 @@ class QuizPhase {
         {
             conditionLabel: 'Quicker (triangle)',
             symbolId:       3,
-            chartId:        'delta025_S8',
+            chartId:        'delta05_S8',
             choice1Position:'up',
             choice2Position:'down',
             yourChoice:     'up',               // same slice, partner first -> you earn 0
@@ -150,8 +150,8 @@ class QuizPhase {
             correctPoints:  0,
             scenarioLines: [
                 'The cue is triangle (Quicker).',
-                'You picked the UP slice  (worth 5 pts).',
-                'Your partner also picked the UP slice  (worth 5 pts).',
+                'You picked the UP slice  (worth 6 pts).',
+                'Your partner also picked the UP slice  (worth 6 pts).',
                 'Your partner chose first.',
                 '',
                 'How many points did YOU earn?',

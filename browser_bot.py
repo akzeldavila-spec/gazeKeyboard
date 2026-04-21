@@ -34,7 +34,7 @@ import sys
 # ── Quiz: correct answers in question order (from QuizPhase.QUESTIONS) ───────
 # Q1 coord same→same=6, Q2 coord same→diff=0, Q3 anti diff→diff=5,
 # Q4 anti diff→same=0, Q5 comp diff slices=6, Q6 comp same you-first=6, Q7 comp same partner-first=0
-QUIZ_ANSWERS = [6, 0, 5, 0, 6, 6, 0]
+QUIZ_ANSWERS = [6, 0, 6, 0, 6, 6, 0]
 
 # Phase durations (seconds) — must match CONFIG in experiment.js
 BASELINE = 1.0
@@ -151,16 +151,21 @@ async def run_bot(url: str, session_id: str, player_num: int):
                     if (window._bot.done) return;
 
                     try {
-                        // Decision: pick a random valid arrow key once per trial
+                        // Decision: pick a random valid arrow key (or G for catch trials) once per trial
                         if (currentPhase === 'decision' && !decisionMade) {
                             const n = trialManager.getCurrentTrialNumber();
                             if (n !== window._bot.lastTrialPressed) {
                                 window._bot.lastTrialPressed = n;
-                                const trial   = trialManager.getCurrentTrial();
-                                const choices = [trial.choice1Position, trial.choice2Position];
-                                const choice  = choices[Math.floor(Math.random() * 2)];
-                                dispatch(KEY[choice]);
-                                console.log('[BOT] Trial', n, '→', choice);
+                                const trial = trialManager.getCurrentTrial();
+                                if (trial.isCatchTrial) {
+                                    dispatch('g');
+                                    console.log('[BOT] Trial', n, '→ g (catch)');
+                                } else {
+                                    const choices = [trial.choice1Position, trial.choice2Position];
+                                    const choice  = choices[Math.floor(Math.random() * 2)];
+                                    dispatch(KEY[choice]);
+                                    console.log('[BOT] Trial', n, '→', choice);
+                                }
                             }
                         }
 

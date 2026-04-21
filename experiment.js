@@ -279,10 +279,15 @@ function handleKeyPress(event) {
     let key = event.key.toLowerCase();
 
     if (currentPhase === 'decision') {
-        if (key === 'arrowleft') keyPressed = 'left';
-        else if (key === 'arrowright') keyPressed = 'right';
-        else if (key === 'arrowup') keyPressed = 'up';
-        else if (key === 'arrowdown') keyPressed = 'down';
+        let trial = trialManager ? trialManager.getCurrentTrial() : null;
+        if (trial && trial.isCatchTrial) {
+            if (key === 'g') keyPressed = 'g';
+        } else {
+            if (key === 'arrowleft') keyPressed = 'left';
+            else if (key === 'arrowright') keyPressed = 'right';
+            else if (key === 'arrowup') keyPressed = 'up';
+            else if (key === 'arrowdown') keyPressed = 'down';
+        }
     } else if (currentPhase === 'instructions') {
         if (key === ' ') keyPressed = 'space';
     }
@@ -367,22 +372,19 @@ function startPhase(phase) {
         partnerDecisionFetched = false;
         partnerChoice = null;
         partnerTimestamp = null;
-        
-        // Record points earned in this trial
+
         let trial = trialManager.getCurrentTrial();
+        let isCatch = trial && trial.isCatchTrial;
         let pointsEarned = 0;
-        
-        // Determine points based on user's choice
-        if (keyPressed === trial.choice1Position) {
-            // Choice 1 corresponds to largerpoints
-            pointsEarned = trial.chart.largerpoints;
-        } else if (keyPressed === trial.choice2Position) {
-            // Choice 2 corresponds to smallerpoints
-            pointsEarned = trial.chart.smallerpoints;
+
+        if (!isCatch) {
+            if (keyPressed === trial.choice1Position) {
+                pointsEarned = trial.chart.largerpoints;
+            } else if (keyPressed === trial.choice2Position) {
+                pointsEarned = trial.chart.smallerpoints;
+            }
         }
-        // If no valid choice was made, pointsEarned remains 0
-        
-        // Record the points
+
         userPoints.push({
             trial: trialManager.getCurrentTrialNumber(),
             choice: keyPressed,
@@ -390,10 +392,9 @@ function startPhase(phase) {
             symbolId: trial.symbol.id,
             pointsEarned: pointsEarned
         });
-        
+
         console.log('Trial ' + trialManager.getCurrentTrialNumber() + ' - Points earned: ' + pointsEarned);
 
-        // ★ Build log entry — everything below is new
         let conditionLabel = { 1: 'anticoordination', 2: 'coordination', 3: 'competition' };
         let elapsedMs = (decisionTimestampMs && experimentWallStartTime)
             ? (decisionTimestampMs - experimentWallStartTime)
@@ -401,17 +402,17 @@ function startPhase(phase) {
 
         decisionLog.push({
             trial:              trialManager.getCurrentTrialNumber(),
-            phase:              trialManager.getCurrentPhase(),
+            phase:              isCatch ? 0 : trialManager.getCurrentPhase(),
             elapsed_ms:         elapsedMs,
             reaction_time_ms:   (decisionTimestampMs && decisionPhaseStartTime)
                                     ? (decisionTimestampMs - decisionPhaseStartTime)
                                     : 'no_response',
-            condition:          conditionLabel[trial.symbol.id] || trial.symbol.id,
+            condition:          isCatch ? 'catch' : (conditionLabel[trial.symbol.id] || trial.symbol.id),
             delta:              trial.chart.delta,
             scale:              trial.chart.S,
             chartId:            trial.chartId,
             choice:             keyPressed || 'none',
-            your_points:        pointsEarned,
+            your_points:        0,
             partner_points:     'pending',
             server_timestamp:   'pending'
         });
@@ -476,9 +477,10 @@ function gameLoop() {
         
         // Only process key presses if a decision hasn't been made yet
         if (!decisionMade) {
-            let validChoice = (keyPressed === trial.choice1Position || 
-                              keyPressed === trial.choice2Position);
-            
+            let validChoice = trial.isCatchTrial
+                ? (keyPressed === 'g')
+                : (keyPressed === trial.choice1Position || keyPressed === trial.choice2Position);
+
             if (validChoice) {
                 decisionMade = true;
                 decisionTimestampMs = Date.now();
@@ -550,6 +552,9 @@ function gameLoop() {
             if (lotteryTrialIndex === null) {
                 let seed = seededRandom(sessionInfo.sessionId);
                 lotteryTrialIndex = seed % trialManager.trialSequence.length;
+                while (trialManager.trialSequence[lotteryTrialIndex].isCatchTrial) {
+                    lotteryTrialIndex = (lotteryTrialIndex + 1) % trialManager.trialSequence.length;
+                }
                 console.log('Lottery trial index:', lotteryTrialIndex, '(Trial ' + (lotteryTrialIndex + 1) + ')');
             }
             renderLottery();
@@ -633,7 +638,18 @@ function renderPostFeedbackDelay() {
 function renderDecision() {
     renderLegend();
     let trial = trialManager.getCurrentTrial();
-    
+
+    if (trial.isCatchTrial) {
+        let img = imageLoader.getChartImage(trial.chartId, 'sample');
+        if (img) drawImage(img, canvas.width / 2, canvas.height / 2 - 30, 128, 128);
+        ctx.fillStyle = '#000000';
+        ctx.font = 'bold 22px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Press G to continue', canvas.width / 2, canvas.height / 2 + 90);
+        return;
+    }
+
     // Get images
     let choice1Img = imageLoader.getChartImage(trial.chartId, 'choice1');
     let choice2Img = imageLoader.getChartImage(trial.chartId, 'choice2');
@@ -661,7 +677,19 @@ function renderDecision() {
 
 function renderFeedback() {
     let trial = trialManager.getCurrentTrial();
-    
+
+    if (trial.isCatchTrial) {
+        let img = imageLoader.getChartImage(trial.chartId, 'sample');
+        if (img) drawImage(img, canvas.width / 2, canvas.height / 2 - 60, 128, 128);
+        if (decisionLog.length > 0) {
+            decisionLog[decisionLog.length - 1].partner_points = 0;
+        }
+        let py = canvas.height / 2 + 80;
+        drawColoredText('You got: 0 points', canvas.width / 3, py, '24px Arial', 'center', '#006400');
+        drawColoredText('Other player got: 0 points', canvas.width * 2 / 3, py, '24px Arial', 'center', '#4B0082');
+        return;
+    }
+
     let leftX = canvas.width / 3;
     let rightX = canvas.width * 2 / 3;
     let imageY = canvas.height / 2 - 120;
