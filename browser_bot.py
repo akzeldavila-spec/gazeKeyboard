@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/akzeldavila/miniconda3/bin/python3
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["playwright"]
@@ -29,6 +29,7 @@ Quick-start:
 
 import argparse
 import asyncio
+import os
 import sys
 
 # ── Quiz: correct answers in question order (from QuizPhase.QUESTIONS) ───────
@@ -52,9 +53,22 @@ async def run_bot(url: str, session_id: str, player_num: int):
         print("Playwright not installed. Run:  pip install playwright && playwright install chromium")
         sys.exit(1)
 
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    os.makedirs(data_dir, exist_ok=True)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=False, slow_mo=30)
-        page    = await browser.new_page()
+        context = await browser.new_context(accept_downloads=True)
+        page    = await context.new_page()
+
+        download_tasks = []
+
+        async def handle_download(download):
+            path = os.path.join(data_dir, download.suggested_filename)
+            await download.save_as(path)
+            log(f"CSV saved → {path}")
+
+        page.on("download", handle_download)
 
         # ── Handle prompt() dialogs (session ID + player number) ──────────────
         async def on_dialog(dialog):
@@ -220,6 +234,7 @@ async def run_bot(url: str, session_id: str, player_num: int):
 
         log("Keeping browser open for 15 s so you can view results…")
         await asyncio.sleep(15)
+        await context.close()
         await browser.close()
 
 
