@@ -158,8 +158,8 @@ async def run_bot(url: str, session_id: str, player_num: int):
                                 window._bot.lastTrialPressed = n;
                                 const trial = trialManager.getCurrentTrial();
                                 if (trial.isCatchTrial) {
-                                    dispatch('g');
-                                    console.log('[BOT] Trial', n, '→ g (catch)');
+                                    dispatch(trial.catchKey);
+                                    console.log('[BOT] Trial', n, '→', trial.catchKey, '(catch)');
                                 } else {
                                     const choices = [trial.choice1Position, trial.choice2Position];
                                     const choice  = choices[Math.floor(Math.random() * 2)];

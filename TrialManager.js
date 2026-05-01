@@ -168,30 +168,32 @@ class TrialManager {
         let phase1Trials = this.generatePhase1Block(phase1ChartIds, 5);
         this.phase1Start = 0;
 
-        // --- CATCH TRIALS (2 trials, between phase 1 and phase 2) ---
-        let catchTrials = this.generateCatchTrials(phase1ChartIds);
+        // --- CATCH TRIAL 1 (1 trial, between phase 1 and phase 2) ---
+        let catchTrial1 = this.generateCatchTrials(phase1ChartIds);
 
         // --- PHASE 2: Testing (120 trials) ---
-        let phase2Trials = this.generatePhase1Block(
-            ['delta025_S8', 'delta025_S16', 'delta075_S16', 'delta05_S32'],
-            5
-        );
-        this.phase2Start = phase1Trials.length + catchTrials.length;
+        let phase2ChartIds = ['delta025_S8', 'delta025_S16', 'delta075_S16', 'delta05_S32'];
+        let phase2Trials = this.generatePhase1Block(phase2ChartIds, 5);
+        this.phase2Start = phase1Trials.length + catchTrial1.length;
+
+        // --- CATCH TRIAL 2 (1 trial, between phase 2 and phase 3) ---
+        let catchTrial2 = this.generateCatchTrials(phase2ChartIds, 'l');
 
         // --- PHASE 3: Replication/drift check (60 trials) ---
         let phase3Trials = this.generatePhase1Block(
             ['delta0_S16', 'delta05_S8'],
             5
         );
-        this.phase3Start = phase1Trials.length + catchTrials.length + phase2Trials.length;
+        this.phase3Start = phase1Trials.length + catchTrial1.length + phase2Trials.length + catchTrial2.length;
 
-        this.trialSequence = [...phase1Trials, ...catchTrials, ...phase2Trials, ...phase3Trials];
+        this.trialSequence = [...phase1Trials, ...catchTrial1, ...phase2Trials, ...catchTrial2, ...phase3Trials];
         this.currentTrialIndex = 0;
 
         console.log('Trial sequence generated:',
             'Phase 1:', phase1Trials.length, 'trials |',
-            'Catch:', catchTrials.length, 'trials |',
+            'Catch 1:', catchTrial1.length, 'trial |',
             'Phase 2:', phase2Trials.length, 'trials |',
+            'Catch 2:', catchTrial2.length, 'trial |',
             'Phase 3:', phase3Trials.length, 'trials |',
             'Total:', this.trialSequence.length
         );
@@ -199,27 +201,23 @@ class TrialManager {
         return this.trialSequence;
     }
 
-    // Generate 2 catch trials using random charts from phase 1
-    generateCatchTrials(phase1ChartIds) {
+    // Generate a single catch trial using a random chart from the given pool
+    generateCatchTrials(chartIds, catchKey = 'g') {
         let positionCombos = [['up', 'down'], ['left', 'right']];
-        let catchTrials = [];
-        for (let i = 0; i < 2; i++) {
-            let chartId = phase1ChartIds[Math.floor(Math.random() * phase1ChartIds.length)];
-            let chart = this.getChart(chartId);
-            let symbol = this.symbols[Math.floor(Math.random() * this.symbols.length)];
-            let posCombo = positionCombos[Math.floor(Math.random() * positionCombos.length)];
-            catchTrials.push({
-                chartId: chart.id,
-                chart: chart,
-                choice1Position: posCombo[0],
-                choice2Position: posCombo[1],
-                symbol: symbol,
-                repetition: 0,
-                isCatchTrial: true,
-                catchKey: 'g'
-            });
-        }
-        return catchTrials;
+        let chartId = chartIds[Math.floor(Math.random() * chartIds.length)];
+        let chart = this.getChart(chartId);
+        let symbol = this.symbols[Math.floor(Math.random() * this.symbols.length)];
+        let posCombo = positionCombos[Math.floor(Math.random() * positionCombos.length)];
+        return [{
+            chartId: chart.id,
+            chart: chart,
+            choice1Position: posCombo[0],
+            choice2Position: posCombo[1],
+            symbol: symbol,
+            repetition: 0,
+            isCatchTrial: true,
+            catchKey: catchKey
+        }];
     }
 
     // Generate a phase block using 2 location counterbalance (1 per axis)
@@ -353,16 +351,19 @@ class TrialManager {
             };
         });
 
-        // Recompute phase boundaries from the loaded sequence
-        let firstCatch = -1, lastCatch = -1;
+        // Recompute phase boundaries from the loaded sequence.
+        // Catch trial 1 sits between phase 1 and phase 2; catch trial 2 between phase 2 and phase 3.
+        let catchPositions = [];
         for (let i = 0; i < this.trialSequence.length; i++) {
             if (this.trialSequence[i].isCatchTrial) {
-                if (firstCatch === -1) firstCatch = i;
-                lastCatch = i;
+                catchPositions.push(i);
             }
         }
-        if (firstCatch !== -1) {
-            this.phase2Start = lastCatch + 1;
+        if (catchPositions.length >= 2) {
+            this.phase2Start = catchPositions[0] + 1;
+            this.phase3Start = catchPositions[1] + 1;
+        } else if (catchPositions.length === 1) {
+            this.phase2Start = catchPositions[0] + 1;
             this.phase3Start = this.phase2Start + 120;
         } else {
             this.phase2Start = 120;

@@ -13,7 +13,7 @@ const CONFIG = {
     feedbackDuration: 2000,
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
-    startingTrialIndex: 0  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
+    startingTrialIndex: 120  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
 };
 
 // Global objects
@@ -281,7 +281,7 @@ function handleKeyPress(event) {
     if (currentPhase === 'decision') {
         let trial = trialManager ? trialManager.getCurrentTrial() : null;
         if (trial && trial.isCatchTrial) {
-            if (key === 'g') keyPressed = 'g';
+            if (key === trial.catchKey) keyPressed = trial.catchKey;
         } else {
             if (key === 'arrowleft') keyPressed = 'left';
             else if (key === 'arrowright') keyPressed = 'right';
@@ -404,6 +404,7 @@ function startPhase(phase) {
             trial:              trialManager.getCurrentTrialNumber(),
             phase:              isCatch ? 0 : trialManager.getCurrentPhase(),
             elapsed_ms:         elapsedMs,
+            server_elapsed_ms:  typeof elapsedMs === 'number' ? elapsedMs + clientServerTimeDiff : 'no_response',
             reaction_time_ms:   (decisionTimestampMs && decisionPhaseStartTime)
                                     ? (decisionTimestampMs - decisionPhaseStartTime)
                                     : 'no_response',
@@ -411,6 +412,12 @@ function startPhase(phase) {
             delta:              trial.chart.delta,
             scale:              trial.chart.S,
             chartId:            trial.chartId,
+            point1_color:       'red',
+            point1_location:    trial.choice1Position,
+            point1_value:       trial.chart.largerpoints,
+            point2_color:       'blue',
+            point2_location:    trial.choice2Position,
+            point2_value:       trial.chart.smallerpoints,
             choice:             keyPressed || 'none',
             your_points:        0,
             partner_points:     'pending',
@@ -478,7 +485,7 @@ function gameLoop() {
         // Only process key presses if a decision hasn't been made yet
         if (!decisionMade) {
             let validChoice = trial.isCatchTrial
-                ? (keyPressed === 'g')
+                ? (keyPressed === trial.catchKey)
                 : (keyPressed === trial.choice1Position || keyPressed === trial.choice2Position);
 
             if (validChoice) {
@@ -646,7 +653,7 @@ function renderDecision() {
         ctx.font = 'bold 22px Arial';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('Press G to continue', canvas.width / 2, canvas.height / 2 + 90);
+        ctx.fillText('Press ' + trial.catchKey.toUpperCase() + ' to continue', canvas.width / 2, canvas.height / 2 + 90);
         return;
     }
 
@@ -831,16 +838,20 @@ function savePhaseDurations() {
     let rows = [];
 
     rows.push([
-        'trial', 'phase', 'elapsed_ms', 'reaction_time_ms', 'server_timestamp',
+        'trial', 'phase', 'elapsed_ms', 'server_elapsed_ms', 'reaction_time_ms', 'server_timestamp',
         'condition', 'delta', 'scale', 'chartId',
+        'point1_color', 'point1_location', 'point1_value',
+        'point2_color', 'point2_location', 'point2_value',
         'choice', 'your_points', 'partner_points'
     ].join(','));
 
     for (let i = 0; i < decisionLog.length; i++) {
         let d = decisionLog[i];
         rows.push([
-            d.trial, d.phase, d.elapsed_ms, d.reaction_time_ms, d.server_timestamp,
+            d.trial, d.phase, d.elapsed_ms, d.server_elapsed_ms, d.reaction_time_ms, d.server_timestamp,
             d.condition, d.delta, d.scale, d.chartId,
+            d.point1_color, d.point1_location, d.point1_value,
+            d.point2_color, d.point2_location, d.point2_value,
             d.choice, d.your_points, d.partner_points
         ].join(','));
         if (typeof d.your_points === 'number') totalPoints += d.your_points;
@@ -848,6 +859,7 @@ function savePhaseDurations() {
 
     rows.push('');
     rows.push('# experiment_start,' + (experimentWallStartTime ? new Date(experimentWallStartTime).toISOString() : 'unknown'));
+    rows.push('# client_server_diff_ms,' + clientServerTimeDiff);
     rows.push('# total_points,' + totalPoints);
     rows.push('# total_trials,' + decisionLog.length);
 
@@ -880,7 +892,9 @@ function uploadDecisionToFirebase(choice, trial) {
         console.warn('Session info not available, cannot upload decision');
         return;
     }
-    
+
+    let targetTrialNumber = trialManager.getCurrentTrialNumber();
+
     const decisionData = {
         sessionId: sessionInfo.sessionId,
         playerNum: sessionInfo.playerNum,
@@ -905,10 +919,10 @@ function uploadDecisionToFirebase(choice, trial) {
                     yourDecisionTimestamp = doc.data().timestamp;
                     console.log('Your decision timestamp recorded:', yourDecisionTimestamp);
 
-                // ★ patch server timestamp into log
-                    if (decisionLog.length > 0) {
-                        decisionLog[decisionLog.length - 1].server_timestamp =
-                        yourDecisionTimestamp.toDate().toISOString();
+                    // patch server timestamp into the correct trial's log entry
+                    let entry = decisionLog.find(function(d) { return d.trial === targetTrialNumber; });
+                    if (entry) {
+                        entry.server_timestamp = yourDecisionTimestamp.toDate().toISOString();
                     }
                 }})
                 .catch(function(error) {

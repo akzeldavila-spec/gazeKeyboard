@@ -1,0 +1,110 @@
+TIMING LOGIC & RECORDING
+========================
+
+1. SYNC SETUP (once, at experiment start)
+-----------------------------------------
+When both players are connected, Firebase writes a single server-side
+experimentStartTime timestamp. Each player reads it and computes:
+
+    clientServerTimeDiff = Firebase server time - player's local clock time
+
+This tells each player how far their local clock is from the server clock.
+The server clock is Firebase/Google's server time
+It is saved in the CSV footer as:  # client_server_diff_ms
+
+Both players share the same Firebase timestamp as their reference point,
+so their clocks can be compared even if their machines disagree on the time.
+
+
+2. EXPERIMENT WALL START (once, per player)
+-------------------------------------------
+When both players finish loading images, each player sets:
+
+    experimentWallStartTime = Date.now()  (local clock)
+
+This is the local "zero point" for all elapsed_ms measurements.
+It is saved in the CSV footer as:  # experiment_start
+
+
+3. PER-TRIAL DECISION TIMING (every trial)
+------------------------------------------
+When the player presses a key:
+
+    decisionTimestampMs = Date.now()  (local clock, exact moment of key press)
+
+From this, three timing values are computed and saved per row:
+
+    elapsed_ms         = decisionTimestampMs - experimentWallStartTime
+                         Time from experiment start to key press, in this
+                         player's local clock. NOT directly comparable
+                         across players.
+
+    server_elapsed_ms  = elapsed_ms + clientServerTimeDiff
+                         Same moment, but expressed in server time.
+                         Both players' values are in the same coordinate
+                         system, so you CAN directly compare them across
+                         the two CSVs to see who decided first and by
+                         how much.
+
+    reaction_time_ms   = decisionTimestampMs - decisionPhaseStartTime
+                         Time from when the decision phase began to when
+                         the key was pressed (i.e., response time).
+
+
+4. SERVER_TIMESTAMP (async, per trial)
+---------------------------------------
+When a decision is made, it is uploaded to Firebase. Firebase assigns a
+server-side timestamp when it receives the upload. Once the upload is
+confirmed, the code patches that timestamp into the log entry:
+
+    server_timestamp = Firebase receipt time (ISO string)
+
+This is NOT the exact moment of key press — it includes network latency.
+Its main use is as an absolute audit trail and for the competition condition
+(symbol 3), where both players' upload timestamps are compared to resolve
+ties (first-to-upload wins).
+
+
+5. CSV COLUMNS SUMMARY
+-----------------------
+Per-trial columns (in order):
+
+    trial               Trial number
+    phase               Experiment phase (1, 2, 3; 0 = catch trial)
+    elapsed_ms          Key press time from experiment start (local clock)
+    server_elapsed_ms   Key press time from experiment start (server clock)
+                        — use this to compare decisions across players
+    reaction_time_ms    Key press time from decision phase start (RT)
+    server_timestamp    Absolute Firebase timestamp of upload (ISO string)
+    condition           anticoordination / coordination / competition / catch
+    delta               Point difference ratio for the trial's chart
+    scale               Total points available (S value)
+    chartId             Which chart configuration was shown
+    point1_color        Color of point 1 shown during sample (always red)
+    point1_location     Screen location of point 1 (up/down/left/right)
+    point1_value        Point value of point 1 (the larger amount)
+    point2_color        Color of point 2 shown during sample (always blue)
+    point2_location     Screen location of point 2
+    point2_value        Point value of point 2 (the smaller amount)
+    choice              Direction key the player pressed (or 'none')
+    your_points         Points this player earned on the trial
+    partner_points      Points the other player earned on the trial
+
+Footer metadata:
+
+    # experiment_start          Local wall clock time experiment began
+    # client_server_diff_ms     This player's local clock offset from server
+    # total_points              Sum of your_points across all trials
+    # total_trials              Number of trials logged
+
+
+6. HOW TO VERIFY SYNC BETWEEN PLAYERS
+---------------------------------------
+Load both players' CSVs. For the same trial number, compare server_elapsed_ms.
+The difference tells you how many milliseconds apart their key presses were,
+in a common time reference. A small difference (< 2000ms) is expected since
+both players have the same decision window.
+
+To check how well the clocks were synced, compare each player's
+client_server_diff_ms — a large difference between the two players' offsets
+would indicate one player had a poor connection at session start.
