@@ -647,13 +647,11 @@ function renderDecision() {
     let trial = trialManager.getCurrentTrial();
 
     if (trial.isCatchTrial) {
-        let img = imageLoader.getChartImage(trial.chartId, 'sample');
-        if (img) drawImage(img, canvas.width / 2, canvas.height / 2 - 30, 128, 128);
         ctx.fillStyle = '#000000';
         ctx.font = 'bold 22px Arial';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('Press ' + trial.catchKey.toUpperCase() + ' to continue', canvas.width / 2, canvas.height / 2 + 90);
+        ctx.fillText('Press ' + trial.catchKey.toUpperCase() + ' to continue', canvas.width / 2, canvas.height / 2);
         return;
     }
 
@@ -686,12 +684,10 @@ function renderFeedback() {
     let trial = trialManager.getCurrentTrial();
 
     if (trial.isCatchTrial) {
-        let img = imageLoader.getChartImage(trial.chartId, 'sample');
-        if (img) drawImage(img, canvas.width / 2, canvas.height / 2 - 60, 128, 128);
         if (decisionLog.length > 0) {
             decisionLog[decisionLog.length - 1].partner_points = 0;
         }
-        let py = canvas.height / 2 + 80;
+        let py = canvas.height / 2;
         drawColoredText('You got: 0 points', canvas.width / 3, py, '24px Arial', 'center', '#006400');
         drawColoredText('Other player got: 0 points', canvas.width * 2 / 3, py, '24px Arial', 'center', '#4B0082');
         return;
