@@ -13,7 +13,8 @@ const CONFIG = {
     feedbackDuration: 2000,
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
-    startingTrialIndex: 0  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
+    startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
+    skipQuiz: true          // TO RESTORE QUIZ: change to false
 };
 
 // Global objects
@@ -43,6 +44,7 @@ let decisionLog = [];
 let phaseLog = [];
 let decisionPhaseStartTime = null;
 let partnerDecisionFetched = false;
+let syncedPhaseStartTime = null;  // Set from Firebase timestamp so both devices use identical phaseStartTime
 
 // Phase tracking array
 let phaseDurations = [];
@@ -91,16 +93,21 @@ function init() {
         imageLoader.preloadSymbolImages(trialManager.symbols, function() {
             let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
             instrPhase.start(function() {
-                // Demo done → run quiz
-                let quizPhase = new QuizPhase(canvas, ctx, imageLoader, trialManager);
-                quizPhase.start(function() {
-                    // Quiz done → now ask for session info
+                function afterQuiz() {
                     sessionInfo = getSessionInfo();
                     console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);
                     displayWaitingScreen();
                     registerPlayerInSession();
                     checkPlayersReady();
-                });
+                }
+
+                if (CONFIG.skipQuiz) {
+                    // Skipping quiz — set skipQuiz: false in CONFIG to restore it
+                    afterQuiz();
+                } else {
+                    let quizPhase = new QuizPhase(canvas, ctx, imageLoader, trialManager);
+                    quizPhase.start(afterQuiz);
+                }
             });
 
         });
@@ -283,18 +290,20 @@ function checkBothPlayersPressedSpace() {
     });
 }
 
-// Both players wait for trialSyncTime from Firebase, then schedule baseline start
-// at the same absolute moment (server time + 700ms buffer).
+// Both players wait for trialSyncTime from Firebase, then start baseline at the
+// same pre-computed phaseStartTime so both devices have an identical clock anchor.
 function waitForTrialSyncAndStart() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().trialSyncTime) {
             unsubscribe();
             let serverSyncMs = doc.data().trialSyncTime.toDate().getTime();
-            // Convert server time to local time, then add 700ms so both clients
-            // have time to receive the notification before the countdown ends.
+            // Both devices derive phaseStartTime from the same server timestamp.
+            // Adding 700ms gives time for both to receive the notification.
             let localStartMs = serverSyncMs - clientServerTimeDiff + 700;
             let delayMs = Math.max(0, localStartMs - Date.now());
             console.log('Trial sync received. Starting baseline in', delayMs, 'ms');
+            // Store the shared start time so startPhase uses it instead of Date.now()
+            syncedPhaseStartTime = localStartMs;
             setTimeout(function() {
                 bothPlayersPressedSpace = true;
             }, delayMs);
@@ -372,6 +381,10 @@ function startPhase(phase) {
     let prevPhaseConfiguredDuration = getConfiguredPhaseDuration(prevPhaseName);
     if (phaseStartTime > 0 && prevPhaseConfiguredDuration !== null) {
         phaseStartTime = phaseStartTime + prevPhaseConfiguredDuration;
+    } else if (syncedPhaseStartTime !== null) {
+        // Use the Firebase-synchronized start time so both devices share the same anchor
+        phaseStartTime = syncedPhaseStartTime;
+        syncedPhaseStartTime = null;
     } else {
         phaseStartTime = Date.now();
     }
