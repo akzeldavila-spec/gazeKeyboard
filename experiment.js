@@ -1146,11 +1146,11 @@ function waitForBothPlayersImagesLoaded() {
             console.log('Both players have loaded images! Starting experiment NOW!');
             unsubscribe();
  
-            db.collection('sessions').doc(sessionInfo.sessionId).set({
-                player1_ready: false,
-                player2_ready: false,
-                trialSyncTime: null
-            }, { merge: true });
+            // Each player only resets their OWN ready flag to avoid a race condition
+            // where one player's reset overwrites the other's already-uploaded ready=true.
+            let resetData = { trialSyncTime: null };
+            resetData['player' + sessionInfo.playerNum + '_ready'] = false;
+            db.collection('sessions').doc(sessionInfo.sessionId).set(resetData, { merge: true });
  
             experimentWallStartTime = Date.now();
  
