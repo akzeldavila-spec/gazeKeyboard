@@ -46,6 +46,7 @@ let phaseLog = [];
 let decisionPhaseStartTime = null;
 let partnerDecisionFetched = false;
 let syncedPhaseStartTime = null;  // Set from Firebase timestamp so both devices use identical phaseStartTime
+let trialSyncReceived = false;    // Guard against waitForTrialSyncAndStart snapshot firing twice
 
 // Phase tracking array
 let phaseDurations = [];
@@ -277,6 +278,10 @@ function checkBothPlayersPressedSpace() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().player1_ready && doc.data().player2_ready) {
             unsubscribe();
+            // Guard against the snapshot firing a second time (e.g. when Player 1
+            // writes trialSyncTime, which updates the same document).
+            if (checkingSpacePress) return;
+            checkingSpacePress = true;
             console.log('Both players pressed space! Writing sync timestamp...');
 
             // Player 1 writes the shared start timestamp; Player 2 just waits for it.
@@ -298,11 +303,18 @@ function waitForTrialSyncAndStart() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().trialSyncTime) {
             unsubscribe();
-            let serverSyncMs = doc.data().trialSyncTime.toDate().getTime();
-            // Both devices derive phaseStartTime from the same server timestamp.
-            // Adding 700ms gives time for both to receive the notification.
-            let localStartMs = serverSyncMs - clientServerTimeDiff + 700;
-            let delayMs = Math.max(0, localStartMs - Date.now());
+            // Guard: Firestore can fire the snapshot twice (provisional local write,
+            // then server-confirmed value). Only the first fire should set syncedPhaseStartTime;
+            // a second fire would push it further into the future and delay Player 2's baseline.
+            if (trialSyncReceived) return;
+            trialSyncReceived = true;
+            // Fire 1000 ms after this machine receives the notification.
+            // Clock-offset math cancels out exactly; the only residual skew is the
+            // difference in Firestore notification latency between the two machines
+            // (typically < 50 ms), which is far better than the previous approach
+            // that accumulated up to ~1000 ms of error from polling-interval timing.
+            let delayMs = 1000;
+            let localStartMs = Date.now() + delayMs;
             console.log('Trial sync received. Starting baseline in', delayMs, 'ms');
             // Store the shared start time so startPhase uses it instead of Date.now()
             syncedPhaseStartTime = localStartMs;
@@ -408,6 +420,7 @@ function startPhase(phase) {
         playerPressedSpace = false;
         bothPlayersPressedSpace = false;
         checkingSpacePress = false;
+        trialSyncReceived = false;
     }
     
     // Reset partner decision fetch flag when entering feedback phase
