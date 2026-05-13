@@ -1128,7 +1128,8 @@ function waitForBothPlayersImagesLoaded() {
  
             db.collection('sessions').doc(sessionInfo.sessionId).set({
                 player1_ready: false,
-                player2_ready: false
+                player2_ready: false,
+                trialSyncTime: null
             }, { merge: true });
  
             experimentWallStartTime = Date.now();
