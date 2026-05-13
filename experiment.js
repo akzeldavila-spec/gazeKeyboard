@@ -91,24 +91,25 @@ function init() {
     // Preload images, then run the demo
     imageLoader.preloadChartImages(trialManager.charts, function() {
         imageLoader.preloadSymbolImages(trialManager.symbols, function() {
-            let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
-            instrPhase.start(function() {
-                function afterQuiz() {
-                    sessionInfo = getSessionInfo();
-                    console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);
-                    displayWaitingScreen();
-                    registerPlayerInSession();
-                    checkPlayersReady();
-                }
+            function startSession() {
+                // TO RESTORE INTRO+QUIZ: set skipQuiz: false in CONFIG
+                sessionInfo = getSessionInfo();
+                console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);
+                displayWaitingScreen();
+                registerPlayerInSession();
+                checkPlayersReady();
+            }
 
-                if (CONFIG.skipQuiz) {
-                    // Skipping quiz — set skipQuiz: false in CONFIG to restore it
-                    afterQuiz();
-                } else {
+            if (CONFIG.skipQuiz) {
+                // Skipping instruction demo and quiz entirely
+                startSession();
+            } else {
+                let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
+                instrPhase.start(function() {
                     let quizPhase = new QuizPhase(canvas, ctx, imageLoader, trialManager);
-                    quizPhase.start(afterQuiz);
-                }
-            });
+                    quizPhase.start(startSession);
+                });
+            }
 
         });
     });
