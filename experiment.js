@@ -13,7 +13,7 @@ const CONFIG = {
     feedbackDuration: 2000,
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
-    startingTrialIndex: 120  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
+    startingTrialIndex: 0  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
 };
 
 // Global objects
