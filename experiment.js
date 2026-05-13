@@ -14,7 +14,8 @@ const CONFIG = {
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
-    skipQuiz: true          // TO RESTORE QUIZ: change to false
+    skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
+    skipInstructions: true  // TO RESTORE INSTRUCTIONS SCREEN: change to false
 };
 
 // Global objects
@@ -484,11 +485,16 @@ function gameLoop() {
     // Handle each phase
     if (currentPhase === 'instructions') {
         renderInstructions();
-        
+
+        // Auto-trigger space press if skipping instructions screen
+        if (CONFIG.skipInstructions && !playerPressedSpace) {
+            keyPressed = 'space';
+        }
+
         if (keyPressed === 'space') {
             keyPressed = '';
             instructionsShown = true;
-            
+
             // Register that this player pressed space
             if (!playerPressedSpace) {
                 playerPressedSpace = true;
