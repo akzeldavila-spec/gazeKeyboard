@@ -268,8 +268,36 @@ function checkBothPlayersPressedSpace() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().player1_ready && doc.data().player2_ready) {
             unsubscribe();
-            bothPlayersPressedSpace = true;
-            console.log('Both players pressed space! Ready to continue.');
+            console.log('Both players pressed space! Writing sync timestamp...');
+
+            // Player 1 writes the shared start timestamp; Player 2 just waits for it.
+            // This ensures both clients anchor their baseline start to the same server moment.
+            if (sessionInfo.playerNum === 1) {
+                db.collection('sessions').doc(sessionInfo.sessionId).set({
+                    trialSyncTime: firebase.firestore.FieldValue.serverTimestamp()
+                }, { merge: true });
+            }
+
+            waitForTrialSyncAndStart();
+        }
+    });
+}
+
+// Both players wait for trialSyncTime from Firebase, then schedule baseline start
+// at the same absolute moment (server time + 700ms buffer).
+function waitForTrialSyncAndStart() {
+    let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
+        if (doc.exists && doc.data().trialSyncTime) {
+            unsubscribe();
+            let serverSyncMs = doc.data().trialSyncTime.toDate().getTime();
+            // Convert server time to local time, then add 700ms so both clients
+            // have time to receive the notification before the countdown ends.
+            let localStartMs = serverSyncMs - clientServerTimeDiff + 700;
+            let delayMs = Math.max(0, localStartMs - Date.now());
+            console.log('Trial sync received. Starting baseline in', delayMs, 'ms');
+            setTimeout(function() {
+                bothPlayersPressedSpace = true;
+            }, delayMs);
         }
     });
 }
