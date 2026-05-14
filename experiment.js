@@ -120,7 +120,7 @@ function init() {
 function displayWaitingScreen() {
     ctx.fillStyle = CONFIG.backgroundColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    drawText('Waiting for other player to join...\n\nSession ID: ' , '24px Arial', 'center');
+    drawText('Waiting for other player to join...\n\nSession ID: ' + (sessionInfo ? sessionInfo.sessionId : ''), canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
 }
 
 function checkPlayersReady() {
