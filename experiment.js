@@ -14,8 +14,8 @@ const CONFIG = {
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
-    skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
-    skipInstructions: true  // TO RESTORE INSTRUCTIONS SCREEN: change to false
+    skipQuiz: false,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
+    skipInstructions: false  // TO RESTORE INSTRUCTIONS SCREEN: change to false
 };
 
 // Global objects
@@ -329,7 +329,7 @@ function waitForTrialSyncAndStart() {
 function handleKeyPress(event) {
     let key = event.key.toLowerCase();
 
-    if (currentPhase === 'decision') {
+    if (currentPhase === 'decision' && !decisionMade) {
         let trial = trialManager ? trialManager.getCurrentTrial() : null;
         if (trial && trial.isCatchTrial) {
             if (key === trial.catchKey) keyPressed = trial.catchKey;
@@ -647,7 +647,7 @@ function gameLoop() {
 // Render functions
 function renderInstructions() {
     if (!instructionsShown) {
-        let text = 'Instructions: Coordinate to determine who gets each piece of the pie.\n\nPress SPACE to start';
+        let text = 'Instructions: Coordinate to determine who gets each piece of the pie.\n\nIMPORTANT: You can only choose an option once — your choice cannot be changed after it is made.\n\nPress SPACE to start';
         drawText(text, canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
     } else if (!bothPlayersPressedSpace) {
         let text = 'Waiting for other player to press SPACE...';
