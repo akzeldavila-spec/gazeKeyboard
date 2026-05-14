@@ -13,7 +13,7 @@ const CONFIG = {
     feedbackDuration: 2000,
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
-    startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
+    startingTrialIndex: 200,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
     skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
     skipInstructions: true  // TO RESTORE INSTRUCTIONS SCREEN: change to false
 };
@@ -120,7 +120,7 @@ function init() {
 function displayWaitingScreen() {
     ctx.fillStyle = CONFIG.backgroundColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    drawText('Waiting for other player to join...\n\nSession ID: ' + sessionInfo.sessionId + '\nYou are Player ' + sessionInfo.playerNum, canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
+    drawText('Waiting for other player to join...\n\nSession ID: ' , '24px Arial', 'center');
 }
 
 function checkPlayersReady() {
