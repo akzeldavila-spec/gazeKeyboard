@@ -623,7 +623,7 @@ function gameLoop() {
                 while (trialManager.trialSequence[lotteryTrialIndex].isCatchTrial) {
                     lotteryTrialIndex = (lotteryTrialIndex + 1) % trialManager.trialSequence.length;
                 }
-                console.log('Lottery trial index:', lotteryTrialIndex, '(Trial ' + (lotteryTrialIndex + 1) + ')');
+                console.log('Reward trial index:', lotteryTrialIndex, '(Trial ' + (lotteryTrialIndex + 1) + ')');
             }
             renderLottery();
             if (keyPressed === 'space') {
@@ -647,7 +647,7 @@ function gameLoop() {
 // Render functions
 function renderInstructions() {
     if (!instructionsShown) {
-        let text = 'Instructions: Coordinate to determine who gets each piece of the pie.\n\nIMPORTANT: You can only choose an option once — your choice cannot be changed after it is made.\n\nPress SPACE to start';
+        let text = 'Instructions: Coordinate to determine who gets each piece of the pie.\n\n You can only choose an option once — your choice cannot be changed after it is made.\n\nPress SPACE to start';
         drawText(text, canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
     } else if (!bothPlayersPressedSpace) {
         let text = 'Waiting for other player to press SPACE...';
@@ -668,6 +668,7 @@ function renderBaseline() {
 }
 
 function renderSample() {
+    renderLegend();
     let trial = trialManager.getCurrentTrial();
     let img = imageLoader.getChartImage(trial.chartId, 'sample');
 
@@ -742,6 +743,7 @@ function renderDecision() {
 }
 
 function renderFeedback() {
+    renderLegend();
     let trial = trialManager.getCurrentTrial();
 
     if (trial.isCatchTrial) {
@@ -813,9 +815,12 @@ function renderFeedback() {
         userPoints[userPoints.length - 1].pointsEarned = yourPoints;
     }
 
-    // ★ patch partner points into log once we have them
-    if (decisionLog.length > 0 && partnerChoice) {
-        decisionLog[decisionLog.length - 1].partner_points = otherPlayerPoints;
+    // ★ patch your and partner points into log once we have them
+    if (decisionLog.length > 0) {
+        decisionLog[decisionLog.length - 1].your_points = yourPoints;
+        if (partnerChoice) {
+            decisionLog[decisionLog.length - 1].partner_points = otherPlayerPoints;
+        }
     }
 
     // --- YOUR CHOICE (left side) ---

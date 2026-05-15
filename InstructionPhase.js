@@ -65,7 +65,8 @@ class InstructionPhase {
     // ── TEXT PAGES SHOWN BEFORE THE DEMOS ──────────────────────────────────────
     static INTRO_PAGES = [
         'Welcome to the experiment!\n\nYou and a partner will see a pie chart\nshowing how points can be split between you.\n\nUse the ARROW KEYS to choose a colored slice.\n\nPress SPACE to continue.',
-        'There are three types of trials.\nEach trial type is shown by a different cue symbol.\nThe cue tells you the rules for earning points.',
+        'There are three types of trials.\nEach trial type is shown by a different cue symbol.\nThe cue tells you the rules for earning points.\n\n',
+        'A random trial will be chosen at the end of the experiment that will determine your reward\n',
         'In this demo you will be able to see your own choice\n AND your partners choice highlighted during the decision phase.\nThis will not be the case in the actual experiment.\n\n\nPress SPACE to see each game type.',
     ];
     // ───────────────────────────────────────────────────────────────────────────
@@ -175,32 +176,32 @@ class InstructionPhase {
             // ---- Demo trial phases (auto-timed, mirroring real experiment) ----
             case 'baseline':
                 this._renderBaseline();
-                this._renderAnnotationBar('Baseline — the cue symbol shows the trial type');
+                this._renderAnnotationBar('The cue symbol shows the trial type');
                 if (elapsed >= CONFIG.baselineDuration) this._setState('sample');
                 break;
 
             case 'sample':
                 this._renderSample();
-                this._renderAnnotationBar('Sample — see the total points and their split');
+                this._renderAnnotationBar('See the total points and their split');
                 if (elapsed >= CONFIG.sampleDuration) this._setState('delay');
                 break;
 
             case 'delay':
                 this._renderDelay();
-                this._renderAnnotationBar('Delay — prepare your response');
+                this._renderAnnotationBar('Prepare your response');
                 if (elapsed >= CONFIG.delayDuration) this._setState('decision');
                 break;
 
             case 'decision':
                 // Show the choices immediately; reveal the pre-set choice after 800 ms
                 this._renderDecision(elapsed >= 800);
-                this._renderAnnotationBar('Decision — choose a slice with the arrow keys');
+                this._renderAnnotationBar('Choose a slice with the arrow keys');
                 if (elapsed >= CONFIG.decisionDuration) this._setState('feedback');
                 break;
 
             case 'feedback':
                 this._renderFeedback();
-                this._renderAnnotationBar('Feedback — see what both players chose and earned');
+                this._renderAnnotationBar('See what both players chose and earned');
                 if (elapsed >= CONFIG.feedbackDuration) this._advanceDemoOrFinish();
                 break;
 

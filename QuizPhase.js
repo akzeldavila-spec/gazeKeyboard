@@ -337,10 +337,6 @@ class QuizPhase {
     _renderQuestion() {
         let q   = this._currentQ();
         let ctx = this.ctx, w = this.canvas.width, h = this.canvas.height;
-        // ── Symbol icon (top-left) ──
-        let symImg = this.imageLoader.getSymbolImage(q.symbolId);
-        if (symImg) ctx.drawImage(symImg, 12, 52, 32, 32);
-
         // ── Chart image (sample view, centred) ──
         let chartImg = this.imageLoader.getChartImage(q.chartId, 'sample');
         let iw = 180, ih = 180;
