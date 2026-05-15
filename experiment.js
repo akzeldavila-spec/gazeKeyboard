@@ -619,14 +619,14 @@ function gameLoop() {
     } else if (currentPhase === 'lottery') {
             if (lotteryTrialIndex === null) {
                 let seed = seededRandom(sessionInfo.sessionId);
-                lotteryTrialIndex = seed % trialManager.trialSequence.length;
+                lotteryTrialIndex = Math.abs(seed) % trialManager.trialSequence.length;
                 while (trialManager.trialSequence[lotteryTrialIndex].isCatchTrial) {
                     lotteryTrialIndex = (lotteryTrialIndex + 1) % trialManager.trialSequence.length;
                 }
                 console.log('Reward trial index:', lotteryTrialIndex, '(Trial ' + (lotteryTrialIndex + 1) + ')');
             }
-            renderLottery();
-            if (keyPressed === 'space') {
+            renderLottery(elapsed);
+            if (keyPressed === 'space' && lotteryPartnerPoints !== null && elapsed >= 5000) {
                 keyPressed = '';
                 startPhase('complete');
             }
@@ -1223,9 +1223,14 @@ function renderLegend() {
         ctx.fillText(labels[symbols[i].id], startX + iconSize + 8, y + iconSize / 2);
     }
 }
-function renderLottery() {
+function renderLottery(elapsed) {
     let cx = canvas.width / 2;
     let cy = canvas.height / 2;
+
+    if (elapsed >= 30000 && lotteryPartnerPoints === null) {
+        lotteryPartnerPoints = 0;
+        lotteryPartnerFetched = true;
+    }
 
     if (!lotteryPartnerFetched) {
         lotteryPartnerFetched = true;
@@ -1242,13 +1247,20 @@ function renderLottery() {
             .then(function(snapshot) {
                 if (!snapshot.empty) {
                     let data = snapshot.docs[0].data();
-                    let trial = trialManager.trialSequence[lotteryTrialIndex];
-                    let points1 = trial.chart.largerpoints;
-                    let points2 = trial.chart.smallerpoints;
-                    lotteryPartnerPoints = (data.choice === trial.choice1Position) ? points1 : points2;
+                    if (data.choice === 'none') {
+                        lotteryPartnerPoints = 0;
+                    } else {
+                        let trial = trialManager.trialSequence[lotteryTrialIndex];
+                        let points1 = trial.chart.largerpoints;
+                        let points2 = trial.chart.smallerpoints;
+                        lotteryPartnerPoints = (data.choice === trial.choice1Position) ? points1 : points2;
+                    }
                 } else {
-                    lotteryPartnerPoints = 0;
+                    lotteryPartnerFetched = false;
                 }
+            })
+            .catch(function() {
+                lotteryPartnerPoints = 0;
             });
 
         let myEntry = decisionLog.find(function(d) { return d.trial === lotteryTrialIndex + 1; });
@@ -1295,7 +1307,14 @@ function renderLottery() {
         drawColoredText('Other player earned: loading...', canvas.width * 2 / 3, 540, '26px Arial', 'center', '#4B0082');
     }
 
-    drawText('Press SPACE to continue', cx, 620, '20px Arial', 'center');
+    if (lotteryPartnerPoints !== null && elapsed >= 5000) {
+        drawText('Press SPACE to continue', cx, 620, '20px Arial', 'center');
+    } else if (elapsed < 5000) {
+        let secondsLeft = Math.ceil((5000 - elapsed) / 1000);
+        drawText('Please wait... ' + secondsLeft + 's', cx, 620, '20px Arial', 'center');
+    } else {
+        drawText('Loading partner data...', cx, 620, '20px Arial', 'center');
+    }
 }
 
 function drawColoredText(text, x, y, font, align, color) {
