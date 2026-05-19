@@ -1,38 +1,90 @@
 TIMING LOGIC & RECORDING
 ========================
 
-1. SYNC SETUP (once, at experiment start)
------------------------------------------
-When both players are connected, Firebase writes a single server-side
+1. CLOCK CALIBRATION (once, at session start)
+----------------------------------------------
+When both players have joined, Firebase writes a single server-side
 experimentStartTime timestamp. Each player reads it and computes:
 
     clientServerTimeDiff = Firebase server time - player's local clock time
 
 This tells each player how far their local clock is from the server clock.
-The server clock is Firebase/Google's server time
 It is saved in the CSV footer as:  # client_server_diff_ms
 
 Both players share the same Firebase timestamp as their reference point,
-so their clocks can be compared even if their machines disagree on the time.
+so their key-press times can be compared even if their machines disagree.
 
 
-2. EXPERIMENT WALL START (once, per player)
--------------------------------------------
-When both players finish loading images, each player sets:
+2. IMAGE LOAD GATE (once, per player)
+--------------------------------------
+After both players have received the trial sequence, each player preloads
+all chart and symbol images and writes player{N}_images_loaded = true to
+Firebase. Once BOTH flags are set, each player:
 
-    experimentWallStartTime = Date.now()  (local clock)
+  a. Resets trialSyncTime to null and their own player{N}_ready to false
+     (clears stale data from any previous run that could cause a false-start)
+  b. Sets experimentWallStartTime = Date.now()  (local "zero point" for CSV)
+  c. Attaches the keyboard handler and starts the game loop at 'instructions'
 
-This is the local "zero point" for all elapsed_ms measurements.
-It is saved in the CSV footer as:  # experiment_start
+This ensures both players enter the instructions phase at the same time
+and with a clean Firebase state.
 
 
-3. PER-TRIAL DECISION TIMING (every trial)
+3. SPACE-PRESS SYNC (once, when players press SPACE)
+-----------------------------------------------------
+The instructions phase waits for both players to press SPACE before the
+first trial begins. The sync protocol:
+
+  a. Each player presses SPACE and writes player{N}_ready = true to Firebase.
+  b. Once both flags are set, Player 1 writes:
+         trialSyncTime = firebase.firestore.FieldValue.serverTimestamp()
+  c. Both players listen for trialSyncTime via an onSnapshot listener.
+  d. When the snapshot fires (with the server-confirmed value), each player
+     computes:
+         syncedPhaseStartTime = Date.now() + 1000ms
+     and schedules a setTimeout(1000ms) that sets bothPlayersPressedSpace = true.
+  e. On the next game-loop frame after bothPlayersPressedSpace is true,
+     startPhase('baseline') fires. Because startPhase uses syncedPhaseStartTime
+     as the anchor on the very first call (instead of Date.now()), both devices
+     share an identical phaseStartTime derived from the same moment in time.
+
+The residual skew between the two devices is just the difference in Firestore
+notification latency (~10–50 ms), far smaller than the previous approach which
+accumulated up to ~1000 ms of error from independent Date.now() calls.
+
+Guard: the trialSyncReceived flag ensures that if Firestore fires the snapshot
+twice (provisional local write, then server-confirmed value), only the first
+fire sets syncedPhaseStartTime.
+
+
+4. FIXED-INCREMENT PHASE TIMING (every phase transition)
+---------------------------------------------------------
+Within a trial, phases advance using fixed-increment timing rather than
+Date.now() snapshots:
+
+    phaseStartTime = phaseStartTime + configuredDurationOfPreviousPhase
+
+The configured durations (in ms):
+    baseline:          1000
+    sample:            1000
+    delay:             1000
+    decision:          2000
+    feedback:          2000
+    postFeedbackDelay: 1000
+
+This prevents per-frame overshoots (~16 ms at 60 fps) from accumulating
+into drift across hundreds of trials. Player-triggered phases ('instructions',
+'lottery') have no fixed duration, so they reset phaseStartTime to Date.now()
+when they start.
+
+
+5. PER-TRIAL DECISION TIMING (every trial)
 ------------------------------------------
-When the player presses a key:
+When the player presses a key during the decision phase:
 
-    decisionTimestampMs = Date.now()  (local clock, exact moment of key press)
+    decisionTimestampMs = Date.now()  (exact moment of key press, local clock)
 
-From this, three timing values are computed and saved per row:
+Three timing values are computed and saved per CSV row:
 
     elapsed_ms         = decisionTimestampMs - experimentWallStartTime
                          Time from experiment start to key press, in this
@@ -48,14 +100,14 @@ From this, three timing values are computed and saved per row:
 
     reaction_time_ms   = decisionTimestampMs - decisionPhaseStartTime
                          Time from when the decision phase began to when
-                         the key was pressed (i.e., response time).
+                         the key was pressed (response time).
 
 
-4. SERVER_TIMESTAMP (async, per trial)
+6. SERVER_TIMESTAMP (async, per trial)
 ---------------------------------------
 When a decision is made, it is uploaded to Firebase. Firebase assigns a
-server-side timestamp when it receives the upload. Once the upload is
-confirmed, the code patches that timestamp into the log entry:
+server-side timestamp when it receives the upload. Once confirmed, the code
+patches that timestamp into the log entry:
 
     server_timestamp = Firebase receipt time (ISO string)
 
@@ -65,7 +117,7 @@ Its main use is as an absolute audit trail and for the competition condition
 ties (first-to-upload wins).
 
 
-5. CSV COLUMNS SUMMARY
+7. CSV COLUMNS SUMMARY
 -----------------------
 Per-trial columns (in order):
 
@@ -98,7 +150,7 @@ Footer metadata:
     # total_trials              Number of trials logged
 
 
-6. HOW TO VERIFY SYNC BETWEEN PLAYERS
+8. HOW TO VERIFY SYNC BETWEEN PLAYERS
 ---------------------------------------
 Load both players' CSVs. For the same trial number, compare server_elapsed_ms.
 The difference tells you how many milliseconds apart their key presses were,
@@ -108,3 +160,11 @@ both players have the same decision window.
 To check how well the clocks were synced, compare each player's
 client_server_diff_ms — a large difference between the two players' offsets
 would indicate one player had a poor connection at session start.
+
+If sync breaks, check:
+  - trialSyncTime is reset to null in waitForBothPlayersImagesLoaded
+    (prevents stale data causing an immediate false-start on re-run)
+  - clientServerTimeDiff is computed correctly in startExperiment
+  - syncedPhaseStartTime is set in waitForTrialSyncAndStart and consumed
+    (and then nulled) in startPhase('baseline')
+  - trialSyncReceived guard is reset to false when entering 'instructions'

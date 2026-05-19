@@ -64,7 +64,7 @@ class InstructionPhase {
 
     // ── TEXT PAGES SHOWN BEFORE THE DEMOS ──────────────────────────────────────
     static INTRO_PAGES = [
-        'Welcome to the experiment!\n\nYou and a partner will see a pie chart\nshowing how points can be split between you.\n\nUse the ARROW KEYS to choose a colored slice.\n\nPress SPACE to continue.',
+        'Welcome to the experiment!\n\nYou and a partner will see a pie chart\nshowing how points can be split between you.\n\nUse ONLY the ARROW KEYS to choose a colored slice. \nPlease do not press any other key unless instructed otherwise. \nPress SPACE to continue.',
         'There are three types of trials.\nEach trial type is shown by a different cue symbol.\nThe cue tells you the rules for earning points.\n\n',
         'A random trial will be chosen at the end of the experiment that will determine your reward\n',
         'In this demo you will be able to see your own choice\n AND your partners choice highlighted during the decision phase.\nThis will not be the case in the actual experiment.\n\n\nPress SPACE to see each game type.',

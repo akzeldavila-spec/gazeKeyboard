@@ -165,15 +165,15 @@ class TrialManager {
 
         // --- PHASE 1: Training (120 trials) ---
         let phase1ChartIds = ['delta0_S8', 'delta05_S8', 'delta0_S16', 'delta05_S16'];
-        let phase1Trials = this.generatePhase1Block(phase1ChartIds, 5);
+        let phase1Trials = this.generatePhase1Block(phase1ChartIds, 2);
         this.phase1Start = 0;
 
         // --- CATCH TRIAL 1 (1 trial, between phase 1 and phase 2) ---
-        let catchTrial1 = this.generateCatchTrials(phase1ChartIds);
+        let catchTrial1 = this.generateCatchTrials(phase1ChartIds); 
 
         // --- PHASE 2: Testing (120 trials) ---
         let phase2ChartIds = ['delta025_S8', 'delta025_S16', 'delta075_S16', 'delta05_S32'];
-        let phase2Trials = this.generatePhase1Block(phase2ChartIds, 5);
+        let phase2Trials = this.generatePhase1Block(phase2ChartIds, 2);
         this.phase2Start = phase1Trials.length + catchTrial1.length;
 
         // --- CATCH TRIAL 2 (1 trial, between phase 2 and phase 3) ---
@@ -182,7 +182,7 @@ class TrialManager {
         // --- PHASE 3: Replication/drift check (60 trials) ---
         let phase3Trials = this.generatePhase1Block(
             ['delta0_S16', 'delta05_S8'],
-            5
+            2
         );
         this.phase3Start = phase1Trials.length + catchTrial1.length + phase2Trials.length + catchTrial2.length;
 
@@ -220,13 +220,14 @@ class TrialManager {
         }];
     }
 
-    // Generate a phase block using 2 location counterbalance (1 per axis)
-    // formula: nCharts * 3 symbols * 2 posCombos * repeats
+    // Generate a phase block: nCharts * 3 symbols * 4 posCombos * repeats
+    // All 4 combos used so each color appears at every position exactly once per repeat.
     generatePhase1Block(chartIds, repeats) {
-        // Use one combo per axis: [up,down] and [left,right]
         let positionCombos = [
             ['up', 'down'],
-            ['left', 'right']
+            ['down', 'up'],
+            ['left', 'right'],
+            ['right', 'left']
         ];
 
         let trials = [];
@@ -243,8 +244,7 @@ class TrialManager {
                             choice1Position: positionCombos[pi][0],
                             choice2Position: positionCombos[pi][1],
                             symbol: this.symbols[si],
-                            repetition: rep + 1,
-                            phase: null  // will be set below
+                            repetition: rep + 1
                         });
                     }
                 }
@@ -373,4 +373,4 @@ class TrialManager {
         this.currentTrialIndex = 0;
         console.log('Trials loaded from Firebase:', this.trialSequence.length, 'trials');
     }
-}Z
+}
