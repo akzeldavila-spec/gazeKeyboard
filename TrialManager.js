@@ -5,6 +5,7 @@ class TrialManager {
     constructor() {
         // Charts organized by (delta, S) combinations
         // Naming: delta_S (delta as fraction numerator for clarity)
+        // List of chart objects 
         this.charts = [
             // S=8 variants
             {
@@ -101,9 +102,10 @@ class TrialManager {
             }
         ];
 
+        //list of symbol objects, with id and path for rendering and identification
         this.symbols = [
-            { id: 1, path: 'stimuli/Anticoordination.png' },  // × icon — different choices earn
-            { id: 2, path: 'stimuli/Coordination.png' },       // + icon — same choice earns
+            { id: 1, path: 'stimuli/Anticoordination.png' },  
+            { id: 2, path: 'stimuli/Coordination.png' },       
             { id: 3, path: 'stimuli/Compete.png' }
         ];
 

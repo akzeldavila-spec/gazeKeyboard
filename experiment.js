@@ -75,7 +75,7 @@ function seededRandom(seed) {
 function init() {
     console.log('Initializing experiment...');
  
-    // Create canvas FIRST — needed before InstructionPhase can render
+    // Create canvas FIRST,needed before InstructionPhase can render
     canvas = document.createElement('canvas');
     canvas.width = CONFIG.canvasWidth;
     canvas.height = CONFIG.canvasHeight;
@@ -94,7 +94,6 @@ function init() {
     imageLoader.preloadChartImages(trialManager.charts, function() {
         imageLoader.preloadSymbolImages(trialManager.symbols, function() {
             function startSession() {
-                // TO RESTORE INTRO+QUIZ: set skipQuiz: false in CONFIG
                 sessionInfo = getSessionInfo();
                 console.log('Session:', sessionInfo.sessionId, 'Player:', sessionInfo.playerNum);
                 displayWaitingScreen();
@@ -103,7 +102,6 @@ function init() {
             }
 
             if (CONFIG.skipQuiz) {
-                // Skipping instruction demo and quiz entirely
                 startSession();
             } else {
                 let instrPhase = new InstructionPhase(canvas, ctx, imageLoader, trialManager);
@@ -236,24 +234,7 @@ function waitForTrialSequence() {
     });
 }
 
-// Common function to continue experiment setup after trials are ready - CHANGED MIGHT NEED LATER 
-// function proceedWithExperiment() {
-//     // Set starting trial index for testing purposes
-//     if (CONFIG.startingTrialIndex > 0) {
-//         trialManager.currentTrialIndex = CONFIG.startingTrialIndex;
-//         console.log('Starting experiment at trial index: ' + CONFIG.startingTrialIndex + ' (Trial ' + trialManager.getCurrentTrialNumber() + ')');
-//     }
-    
-//     // Preload images
-//     imageLoader.preloadChartImages(trialManager.charts, function() {
-//         console.log('Images loaded, starting experiment');
-//         imageLoader.preloadSymbolImages(trialManager.symbols, function() {
-//             console.log('Symbols loaded, starting experiment');
-//             startPhase('instructions');
-//             requestAnimationFrame(gameLoop);
-//         });
-//     });
-// }
+
 
 // Get synchronized time across both clients
 
