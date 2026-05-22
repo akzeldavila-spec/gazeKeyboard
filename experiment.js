@@ -14,8 +14,8 @@ const CONFIG = {
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
-    skipQuiz: false,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
-    skipInstructions: false  // TO RESTORE INSTRUCTIONS SCREEN: change to false
+    skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
+    skipInstructions: true  // TO RESTORE INSTRUCTIONS SCREEN: change to false
 };
 
 // Global objects
@@ -60,6 +60,18 @@ let lotteryYourPoints = null;
 let lotteryPartnerPoints = null;
 let lotteryPartnerFetched = false;
 
+// WebSocket connection to Python/Pupil Labs bridge
+let ws = null;
+
+// No-op stub for future WebSocket/Pupil Labs annotation integration.
+// Replace the body to emit events; do not change call sites.
+// Called with type='phase_start' on every phase transition and type='decision' on every key response.
+function emitEvent(event) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(event));
+    }
+}
+
 // Seeded random using session ID (ensures same trial for both players)
 function seededRandom(seed) {
     let hash = 0;
@@ -74,6 +86,11 @@ function seededRandom(seed) {
 
 function init() {
     console.log('Initializing experiment...');
+
+    ws = new WebSocket('ws://localhost:8765');
+    ws.onopen  = function() { console.log('WebSocket connected to Pupil bridge'); };
+    ws.onerror = function(e) { console.warn('WebSocket error — Pupil bridge may not be running', e); };
+    ws.onclose = function() { console.warn('WebSocket closed'); };
  
     // Create canvas FIRST,needed before InstructionPhase can render
     canvas = document.createElement('canvas');
@@ -281,28 +298,45 @@ function checkBothPlayersPressedSpace() {
 // Both players wait for trialSyncTime from Firebase, then start baseline at the
 // same pre-computed phaseStartTime so both devices have an identical clock anchor.
 function waitForTrialSyncAndStart() {
+    trialSyncReceived = false;
+    // seenNull ensures we don't react to a stale trialSyncTime left over from a
+    // previous run. The reset write in waitForBothPlayersImagesLoaded is async and
+    // may not have propagated before this listener attaches, so we require the
+    // listener to observe a null value before trusting any non-null value.
+    let seenNull = false;
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
-        if (doc.exists && doc.data().trialSyncTime) {
-            unsubscribe();
-            // Guard: Firestore can fire the snapshot twice (provisional local write,
-            // then server-confirmed value). Only the first fire should set syncedPhaseStartTime;
-            // a second fire would push it further into the future and delay Player 2's baseline.
-            if (trialSyncReceived) return;
-            trialSyncReceived = true;
-            // Fire 1000 ms after this machine receives the notification.
-            // Clock-offset math cancels out exactly; the only residual skew is the
-            // difference in Firestore notification latency between the two machines
-            // (typically < 50 ms), which is far better than the previous approach
-            // that accumulated up to ~1000 ms of error from polling-interval timing.
-            let delayMs = 1000;
-            let localStartMs = Date.now() + delayMs;
-            console.log('Trial sync received. Starting baseline in', delayMs, 'ms');
-            // Store the shared start time so startPhase uses it instead of Date.now()
-            syncedPhaseStartTime = localStartMs;
-            setTimeout(function() {
-                bothPlayersPressedSpace = true;
-            }, delayMs);
+        if (!doc.exists) return;
+        let data = doc.data();
+
+        if (!data.trialSyncTime) {
+            seenNull = true;
+            return;
         }
+
+        if (!seenNull) {
+            console.error('SYNC ERROR: waitForTrialSyncAndStart received a non-null trialSyncTime before seeing a null — stale value from previous run, ignoring. Waiting for reset to propagate.');
+            return;
+        }
+
+        unsubscribe();
+        // Guard: Firestore can fire the snapshot twice (provisional local write,
+        // then server-confirmed value). Only the first fire should set syncedPhaseStartTime;
+        // a second fire would push it further into the future and delay Player 2's baseline.
+        if (trialSyncReceived) return;
+        trialSyncReceived = true;
+        // Fire 1000 ms after this machine receives the notification.
+        // Clock-offset math cancels out exactly; the only residual skew is the
+        // difference in Firestore notification latency between the two machines
+        // (typically < 50 ms), which is far better than the previous approach
+        // that accumulated up to ~1000 ms of error from polling-interval timing.
+        let delayMs = 1000;
+        let localStartMs = Date.now() + delayMs;
+        console.log('Trial sync received. Starting baseline in', delayMs, 'ms');
+        // Store the shared start time so startPhase uses it instead of Date.now()
+        syncedPhaseStartTime = localStartMs;
+        setTimeout(function() {
+            bothPlayersPressedSpace = true;
+        }, delayMs);
     });
 }
 
@@ -350,6 +384,38 @@ function getConfiguredPhaseDuration(phase) {
     }
 }
 
+// Builds a single decisionLog entry from the current trial state.
+// Keeps CSV field construction in one place so WebSocket emission can reuse it.
+function buildDecisionEvent(trial, isCatch) {
+    let conditionLabel = { 1: 'anticoordination', 2: 'coordination', 3: 'competition' };
+    let elapsedMs = (decisionTimestampMs && experimentWallStartTime)
+        ? (decisionTimestampMs - experimentWallStartTime)
+        : 'no_response';
+    return {
+        trial:              trialManager.getCurrentTrialNumber(),
+        phase:              isCatch ? 0 : trialManager.getCurrentPhase(),
+        elapsed_ms:         elapsedMs,
+        server_elapsed_ms:  typeof elapsedMs === 'number' ? elapsedMs + clientServerTimeDiff : 'no_response',
+        reaction_time_ms:   (decisionTimestampMs && decisionPhaseStartTime)
+                                ? (decisionTimestampMs - decisionPhaseStartTime)
+                                : 'no_response',
+        condition:          isCatch ? 'catch' : (conditionLabel[trial.symbol.id] || trial.symbol.id),
+        delta:              trial.chart.delta,
+        scale:              trial.chart.S,
+        chartId:            trial.chartId,
+        point1_color:       'red',
+        point1_location:    trial.choice1Position,
+        point1_value:       trial.chart.largerpoints,
+        point2_color:       'blue',
+        point2_location:    trial.choice2Position,
+        point2_value:       trial.chart.smallerpoints,
+        choice:             keyPressed || 'none',
+        your_points:        0,
+        partner_points:     'pending',
+        server_timestamp:   'pending'
+    };
+}
+
 // Start a new phase
 function startPhase(phase) {
     // Record the duration of the previous phase
@@ -381,12 +447,23 @@ function startPhase(phase) {
         phaseStartTime = syncedPhaseStartTime;
         syncedPhaseStartTime = null;
     } else {
+        const trialPhases = ['baseline', 'sample', 'delay', 'decision', 'feedback', 'postFeedbackDelay'];
+        if (trialPhases.includes(phase)) {
+            console.error('SYNC ERROR: entering "' + phase + '" without a synced anchor — syncedPhaseStartTime was null. Both devices will be desynced from this point.');
+        }
         phaseStartTime = Date.now();
     }
+    let phaseElapsedMs = experimentWallStartTime ? (Date.now() - experimentWallStartTime) : 'experiment_not_started';
     phaseLog.push({
-    trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
-    phase: phase,
-    elapsed_ms: experimentWallStartTime ? (Date.now() - experimentWallStartTime) : 'experiment_not_started'
+        trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
+        phase: phase,
+        elapsed_ms: phaseElapsedMs
+    });
+    emitEvent({
+        type: 'phase_start',
+        trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
+        phase: phase,
+        elapsed_ms: phaseElapsedMs
     });
     
     // Reset decision flag when entering decision phase
@@ -432,34 +509,7 @@ function startPhase(phase) {
 
         console.log('Trial ' + trialManager.getCurrentTrialNumber() + ' - Points earned: ' + pointsEarned);
 
-        let conditionLabel = { 1: 'anticoordination', 2: 'coordination', 3: 'competition' };
-        let elapsedMs = (decisionTimestampMs && experimentWallStartTime)
-            ? (decisionTimestampMs - experimentWallStartTime)
-            : 'no_response';
-
-        decisionLog.push({
-            trial:              trialManager.getCurrentTrialNumber(),
-            phase:              isCatch ? 0 : trialManager.getCurrentPhase(),
-            elapsed_ms:         elapsedMs,
-            server_elapsed_ms:  typeof elapsedMs === 'number' ? elapsedMs + clientServerTimeDiff : 'no_response',
-            reaction_time_ms:   (decisionTimestampMs && decisionPhaseStartTime)
-                                    ? (decisionTimestampMs - decisionPhaseStartTime)
-                                    : 'no_response',
-            condition:          isCatch ? 'catch' : (conditionLabel[trial.symbol.id] || trial.symbol.id),
-            delta:              trial.chart.delta,
-            scale:              trial.chart.S,
-            chartId:            trial.chartId,
-            point1_color:       'red',
-            point1_location:    trial.choice1Position,
-            point1_value:       trial.chart.largerpoints,
-            point2_color:       'blue',
-            point2_location:    trial.choice2Position,
-            point2_value:       trial.chart.smallerpoints,
-            choice:             keyPressed || 'none',
-            your_points:        0,
-            partner_points:     'pending',
-            server_timestamp:   'pending'
-        });
+        decisionLog.push(buildDecisionEvent(trial, isCatch));
 
     decisionTimestampMs = null;
 
@@ -533,7 +583,15 @@ function gameLoop() {
             if (validChoice) {
                 decisionMade = true;
                 decisionTimestampMs = Date.now();
-                
+                emitEvent({
+                    type: 'decision',
+                    trial: trialManager.getCurrentTrialNumber(),
+                    phase: trialManager.getCurrentPhase(),
+                    choice: keyPressed,
+                    elapsed_ms: experimentWallStartTime ? (decisionTimestampMs - experimentWallStartTime) : 'no_response',
+                    reaction_time_ms: decisionTimestampMs - decisionPhaseStartTime
+                });
+
                 // Upload the decision to Firebase if not already uploaded
                 if (!decisionUploaded && sessionInfo && sessionInfo.sessionId) {
                     uploadDecisionToFirebase(keyPressed, trial);
@@ -1043,41 +1101,6 @@ function getSessionInfo() {
     return { sessionId, playerNum };
 }
 
-// Upload player's choice to Firebase
-async function uploadChoice(trialNum, choice) {
-    let docRef = db.collection('sessions')
-        .doc(sessionInfo.sessionId)
-        .collection('trials')
-        .doc('trial_' + trialNum);
-    
-    let fieldName = 'player' + sessionInfo.playerNum + '_choice';
-    let data = {};
-    data[fieldName] = choice;
-    
-    await docRef.set(data, { merge: true });
-    console.log('Uploaded my choice:', choice);
-}
-
-// Get partner's choice from Firebase (doesn't wait, just reads whatever's there)
-async function getPartnerChoice(trialNum) {
-    let docRef = db.collection('sessions')
-        .doc(sessionInfo.sessionId)
-        .collection('trials')
-        .doc('trial_' + trialNum);
-    
-    let partnerField = 'player' + (sessionInfo.playerNum === 1 ? 2 : 1) + '_choice';
-    
-    let doc = await docRef.get();
-    if (doc.exists) {
-        let data = doc.data();
-        let choice = data[partnerField] || null;
-        console.log('Partner choice:', choice);
-        return choice;
-    }
-    
-    return null;  //partner didnt choose 
-}
-
 // Player 1 waits for confirmation that trials are in Firebase
 function waitForTrialSequenceConfirmation() {
     db.collection('sessions').doc(sessionInfo.sessionId).get().then(function(doc) {
@@ -1152,7 +1175,11 @@ function waitForBothPlayersImagesLoaded() {
             db.collection('sessions').doc(sessionInfo.sessionId).set(resetData, { merge: true });
  
             experimentWallStartTime = Date.now();
- 
+            emitEvent({
+                type: 'experiment_start',
+                wall_time_ms: experimentWallStartTime
+            });
+
             // Re-attach the main key handler and start the game loop.
             // The 'instructions' phase (waiting for both players to press SPACE)
             // is still the first real phase — it just no longer shows the demo.
