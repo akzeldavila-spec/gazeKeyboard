@@ -1,0 +1,96 @@
+====================================================
+ANNOTATION FIELDS
+====================================================
+
+elapsed_ms
+    How many milliseconds have passed since the experiment began on that
+    specific machine (Date.now() - experimentWallStartTime).
+    Use for sanity-checking timing within a single session only.
+    Do NOT use to compare across the two players — each machine has its
+    own local clock.
+
+timestamp
+    The event time in PupilCore's internal clock (seconds since Pupil
+    started). Added by SendData.py using the paired reference recorded
+    at connection. This is the field to use for aligning with gaze data.
+
+duration
+    Always 0.0 — annotations mark a point in time, not a span.
+
+added_in_capture
+    Always True — annotations are sent live during recording via ZMQ.
+
+label
+    The event type: "experiment_start", "phase_start", or "decision".
+
+
+====================================================
+HOW TO ALIGN GAZE DATA WITH THE EXPERIMENT
+====================================================
+
+The experiment_start annotation is the anchor for everything.
+Its timestamp is in PupilCore's clock, so subtracting it from any
+gaze timestamp gives you time relative to experiment start.
+
+--- Step 1: Find the anchor ---
+
+    exp_start_t = next(
+        a['timestamp'] for a in annotations
+        if a['label'] == 'experiment_start'
+    )
+
+--- Step 2: Normalize all gaze timestamps ---
+
+    gaze_t_relative = gaze_timestamps - exp_start_t
+    # gaze_t_relative == 0  →  experiment started
+    # gaze_t_relative == 5  →  5 seconds into the experiment
+
+--- Step 3: Segment gaze by trial and phase ---
+
+Each phase_start annotation carries 'trial' and 'phase' fields.
+Use them to isolate gaze during any specific moment.
+
+Example — all gaze during trial 5's decision phase (2 seconds long):
+
+    phase_ann = next(
+        a for a in annotations
+        if a['label'] == 'phase_start'
+        and a['trial'] == 5
+        and a['phase'] == 'decision'
+    )
+
+    phase_start = phase_ann['timestamp'] - exp_start_t
+    phase_end   = phase_start + 2.0   # decision phase is 2s
+
+    mask = (gaze_t_relative >= phase_start) & (gaze_t_relative < phase_end)
+    trial5_decision_gaze = gaze_data[mask]
+
+--- Step 4: Align the two players' gaze streams ---
+
+Both players have annotations with the same 'trial' and 'phase' values
+but different PupilCore timestamps (each machine has its own clock).
+Find the same annotation in each recording to compute the offset:
+
+    offset = player1_ann['timestamp'] - player2_ann['timestamp']
+    player2_gaze_aligned = player2_gaze_timestamps + offset
+
+Any matching trial/phase annotation works as the alignment anchor.
+You have 242 trials worth of redundant checks.
+
+
+====================================================
+ANNOTATION TYPES SENT BY THE EXPERIMENT
+====================================================
+
+experiment_start
+    Fired once when both players begin the experiment.
+    Extra fields: wall_time_ms
+
+phase_start
+    Fired at every phase transition (baseline, sample, delay,
+    decision, feedback, postFeedbackDelay).
+    Extra fields: trial, phase, elapsed_ms
+
+decision
+    Fired when a player presses a key during the decision phase.
+    Extra fields: trial, phase, choice, elapsed_ms, reaction_time_ms
