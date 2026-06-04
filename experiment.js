@@ -15,7 +15,8 @@ const CONFIG = {
     baselineDuration: 1000,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
     skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
-    skipInstructions: true  // TO RESTORE INSTRUCTIONS SCREEN: change to false
+    skipInstructions: true, // TO RESTORE INSTRUCTIONS SCREEN: change to false
+    syncServerUrl: 'ws://localhost:8766'  // Change to the sync server's LAN IP before running (e.g. ws://192.168.1.5:8766)
 };
 
 // Global objects
@@ -40,13 +41,19 @@ let bothPlayersPressedSpace = false;
 let checkingSpacePress = false;
 let sessionCleared = false;
 let experimentWallStartTime = null;
+let experimentPerfStartTime = null;  // performance.now() anchor for sub-ms RT measurement
 let decisionTimestampMs = null;
 let decisionLog = [];
 let phaseLog = [];
 let decisionPhaseStartTime = null;
 let partnerDecisionFetched = false;
-let syncedPhaseStartTime = null;  // Set from Firebase timestamp so both devices use identical phaseStartTime
-let trialSyncReceived = false;    // Guard against waitForTrialSyncAndStart snapshot firing twice
+let syncedPhaseStartTime = null;  // Set from sync server so both devices use identical phaseStartTime
+
+// Sync server (SyncServer.py)
+let syncWs = null;
+let syncServerClockDiff = 0;   // server_ms - client_ms; used to convert server timestamps to local time
+let pendingSyncCallback = null; // fired when sync_ack arrives and the target moment is reached
+let trialSyncReady = false;     // set true by sync_ack callback to trigger baseline start
 
 // Phase tracking array
 let phaseDurations = [];
@@ -87,10 +94,41 @@ function seededRandom(seed) {
 function init() {
     console.log('Initializing experiment...');
 
+    // Pupil Labs annotation bridge (local only, one per machine)
     ws = new WebSocket('ws://localhost:8765');
     ws.onopen  = function() { console.log('WebSocket connected to Pupil bridge'); };
     ws.onerror = function(e) { console.warn('WebSocket error — Pupil bridge may not be running', e); };
     ws.onclose = function() { console.warn('WebSocket closed'); };
+
+    // Shared sync server — both browsers connect to the same SyncServer.py instance.
+    // Update CONFIG.syncServerUrl to the server's LAN IP before running.
+    syncWs = new WebSocket(CONFIG.syncServerUrl);
+    syncWs.onopen = function() {
+        console.log('Connected to sync server');
+        // One ping/pong measures the clock offset between this browser and the server.
+        syncWs.send(JSON.stringify({ type: 'ping', client_time: Date.now() }));
+    };
+    syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
+    syncWs.onclose = function() { console.warn('Sync server connection closed'); };
+    syncWs.onmessage = function(event) {
+        let data = JSON.parse(event.data);
+        if (data.type === 'pong') {
+            // rtt/2 estimates one-way latency; offset converts server timestamps to local time
+            let rtt = Date.now() - data.client_time;
+            syncServerClockDiff = data.server_ms + rtt / 2 - Date.now();
+            console.log('Sync server clock diff: ' + syncServerClockDiff.toFixed(2) + ' ms, RTT: ' + rtt + ' ms');
+        } else if (data.type === 'sync_ack') {
+            let localTargetMs = data.target_ms - syncServerClockDiff;
+            syncedPhaseStartTime = localTargetMs;
+            let waitMs = Math.max(0, localTargetMs - Date.now());
+            console.log('Sync ack received. Callback fires in ' + waitMs.toFixed(1) + ' ms');
+            if (pendingSyncCallback) {
+                let cb = pendingSyncCallback;
+                pendingSyncCallback = null;
+                setTimeout(cb, waitMs);
+            }
+        }
+    };
  
     // Create canvas FIRST,needed before InstructionPhase can render
     canvas = document.createElement('canvas');
@@ -276,69 +314,38 @@ function checkBothPlayersPressedSpace() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().player1_ready && doc.data().player2_ready) {
             unsubscribe();
-            // Guard against the snapshot firing a second time (e.g. when Player 1
-            // writes trialSyncTime, which updates the same document).
             if (checkingSpacePress) return;
             checkingSpacePress = true;
-            console.log('Both players pressed space! Writing sync timestamp...');
+            console.log('Both players pressed space! Requesting sync timestamp from sync server...');
 
-            // Player 1 writes the shared start timestamp; Player 2 just waits for it.
-            // This ensures both clients anchor their baseline start to the same server moment.
+            // Register callback before sending request so it's ready when sync_ack arrives
+            pendingSyncCallback = function() { bothPlayersPressedSpace = true; };
+
+            // Player 1 triggers the sync; the sync server broadcasts to all connected clients
+            // including Player 1, so both receive the same target_ms simultaneously.
             if (sessionInfo.playerNum === 1) {
-                db.collection('sessions').doc(sessionInfo.sessionId).set({
-                    trialSyncTime: firebase.firestore.FieldValue.serverTimestamp()
-                }, { merge: true });
+                if (syncWs && syncWs.readyState === WebSocket.OPEN) {
+                    syncWs.send(JSON.stringify({ type: 'sync_request' }));
+                } else {
+                    console.error('SYNC ERROR: sync server not connected — cannot start trial sync');
+                }
             }
+            // Player 2 receives the broadcast sync_ack automatically via syncWs.onmessage
 
-            waitForTrialSyncAndStart();
+            // Fallback: if sync server doesn't respond within 2 seconds, both players
+            // independently fall through rather than hanging on the instructions screen.
+            setTimeout(function() {
+                if (!bothPlayersPressedSpace) {
+                    console.warn('SYNC TIMEOUT: sync server did not respond for instructions sync — starting unsynced');
+                    pendingSyncCallback = null;
+                    syncedPhaseStartTime = Date.now();
+                    bothPlayersPressedSpace = true;
+                }
+            }, 2000);
         }
     });
 }
 
-// Both players wait for trialSyncTime from Firebase, then start baseline at the
-// same pre-computed phaseStartTime so both devices have an identical clock anchor.
-function waitForTrialSyncAndStart() {
-    trialSyncReceived = false;
-    // seenNull ensures we don't react to a stale trialSyncTime left over from a
-    // previous run. The reset write in waitForBothPlayersImagesLoaded is async and
-    // may not have propagated before this listener attaches, so we require the
-    // listener to observe a null value before trusting any non-null value.
-    let seenNull = false;
-    let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
-        if (!doc.exists) return;
-        let data = doc.data();
-
-        if (!data.trialSyncTime) {
-            seenNull = true;
-            return;
-        }
-
-        if (!seenNull) {
-            console.error('SYNC ERROR: waitForTrialSyncAndStart received a non-null trialSyncTime before seeing a null — stale value from previous run, ignoring. Waiting for reset to propagate.');
-            return;
-        }
-
-        unsubscribe();
-        // Guard: Firestore can fire the snapshot twice (provisional local write,
-        // then server-confirmed value). Only the first fire should set syncedPhaseStartTime;
-        // a second fire would push it further into the future and delay Player 2's baseline.
-        if (trialSyncReceived) return;
-        trialSyncReceived = true;
-        // Fire 1000 ms after this machine receives the notification.
-        // Clock-offset math cancels out exactly; the only residual skew is the
-        // difference in Firestore notification latency between the two machines
-        // (typically < 50 ms), which is far better than the previous approach
-        // that accumulated up to ~1000 ms of error from polling-interval timing.
-        let delayMs = 1000;
-        let localStartMs = Date.now() + delayMs;
-        console.log('Trial sync received. Starting baseline in', delayMs, 'ms');
-        // Store the shared start time so startPhase uses it instead of Date.now()
-        syncedPhaseStartTime = localStartMs;
-        setTimeout(function() {
-            bothPlayersPressedSpace = true;
-        }, delayMs);
-    });
-}
 
 // Handle keyboard input
 function handleKeyPress(event) {
@@ -388,15 +395,15 @@ function getConfiguredPhaseDuration(phase) {
 // Keeps CSV field construction in one place so WebSocket emission can reuse it.
 function buildDecisionEvent(trial, isCatch) {
     let conditionLabel = { 1: 'anticoordination', 2: 'coordination', 3: 'competition' };
-    let elapsedMs = (decisionTimestampMs && experimentWallStartTime)
-        ? (decisionTimestampMs - experimentWallStartTime)
+    let elapsedMs = (decisionTimestampMs != null && experimentPerfStartTime != null)
+        ? (decisionTimestampMs - experimentPerfStartTime)
         : 'no_response';
     return {
         trial:              trialManager.getCurrentTrialNumber(),
         phase:              isCatch ? 0 : trialManager.getCurrentPhase(),
         elapsed_ms:         elapsedMs,
         server_elapsed_ms:  typeof elapsedMs === 'number' ? elapsedMs + clientServerTimeDiff : 'no_response',
-        reaction_time_ms:   (decisionTimestampMs && decisionPhaseStartTime)
+        reaction_time_ms:   (decisionTimestampMs != null && decisionPhaseStartTime != null)
                                 ? (decisionTimestampMs - decisionPhaseStartTime)
                                 : 'no_response',
         condition:          isCatch ? 'catch' : (conditionLabel[trial.symbol.id] || trial.symbol.id),
@@ -440,16 +447,17 @@ function startPhase(phase) {
     // (instructions, lottery) have no fixed duration so we reset to wall clock.
     let prevPhaseName = phaseDurations.length > 0 ? phaseDurations[phaseDurations.length - 1].phase : null;
     let prevPhaseConfiguredDuration = getConfiguredPhaseDuration(prevPhaseName);
-    if (phaseStartTime > 0 && prevPhaseConfiguredDuration !== null) {
-        phaseStartTime = phaseStartTime + prevPhaseConfiguredDuration;
-    } else if (syncedPhaseStartTime !== null) {
-        // Use the Firebase-synchronized start time so both devices share the same anchor
+    if (syncedPhaseStartTime !== null) {
+        // Sync server anchor takes priority — used for the initial baseline and every
+        // per-trial resync. Overrides fixed-increment so resyncs fully reset the clock.
         phaseStartTime = syncedPhaseStartTime;
         syncedPhaseStartTime = null;
+    } else if (phaseStartTime > 0 && prevPhaseConfiguredDuration !== null) {
+        phaseStartTime = phaseStartTime + prevPhaseConfiguredDuration;
     } else {
         const trialPhases = ['baseline', 'sample', 'delay', 'decision', 'feedback', 'postFeedbackDelay'];
         if (trialPhases.includes(phase)) {
-            console.error('SYNC ERROR: entering "' + phase + '" without a synced anchor — syncedPhaseStartTime was null. Both devices will be desynced from this point.');
+            console.error('SYNC ERROR: entering "' + phase + '" without a synced anchor — both devices will be desynced from this point.');
         }
         phaseStartTime = Date.now();
     }
@@ -470,7 +478,7 @@ function startPhase(phase) {
     if (phase === 'decision') {
         decisionMade = false;
         decisionUploaded = false;
-        decisionPhaseStartTime = phaseStartTime;
+        decisionPhaseStartTime = performance.now();
     }
     
     // Reset space press flags when entering instructions phase
@@ -478,7 +486,17 @@ function startPhase(phase) {
         playerPressedSpace = false;
         bothPlayersPressedSpace = false;
         checkingSpacePress = false;
-        trialSyncReceived = false;
+    }
+
+    // Per-trial resync: Player 1 requests a sync timestamp at the start of each
+    // postFeedbackDelay (blank screen). The sync_ack fires trialSyncReady when
+    // the shared target moment arrives, replacing the fixed-duration timeout.
+    if (phase === 'postFeedbackDelay') {
+        trialSyncReady = false;
+        pendingSyncCallback = function() { trialSyncReady = true; };
+        if (sessionInfo && sessionInfo.playerNum === 1 && syncWs && syncWs.readyState === WebSocket.OPEN) {
+            syncWs.send(JSON.stringify({ type: 'sync_request' }));
+        }
     }
     
     // Reset partner decision fetch flag when entering feedback phase
@@ -582,13 +600,13 @@ function gameLoop() {
 
             if (validChoice) {
                 decisionMade = true;
-                decisionTimestampMs = Date.now();
+                decisionTimestampMs = performance.now();
                 emitEvent({
                     type: 'decision',
                     trial: trialManager.getCurrentTrialNumber(),
                     phase: trialManager.getCurrentPhase(),
                     choice: keyPressed,
-                    elapsed_ms: experimentWallStartTime ? (decisionTimestampMs - experimentWallStartTime) : 'no_response',
+                    elapsed_ms: experimentPerfStartTime != null ? (decisionTimestampMs - experimentPerfStartTime) : 'no_response',
                     reaction_time_ms: decisionTimestampMs - decisionPhaseStartTime
                 });
 
@@ -639,7 +657,15 @@ function gameLoop() {
         
     } else if (currentPhase === 'postFeedbackDelay') {
         renderPostFeedbackDelay();
-        if (elapsed >= CONFIG.postFeedbackDelayDuration) {
+        if (trialSyncReady) {
+            trialSyncReady = false;
+            keyPressed = '';
+            startPhase('baseline');
+        } else if (elapsed >= 1500) {
+            // Sync server did not respond in time — fall through unsynced rather than
+            // freezing the session. Players may be briefly misaligned on this trial.
+            console.warn('SYNC TIMEOUT: sync server did not respond within 1500 ms, advancing without resync');
+            pendingSyncCallback = null;
             keyPressed = '';
             startPhase('baseline');
         }
@@ -1170,11 +1196,12 @@ function waitForBothPlayersImagesLoaded() {
  
             // Each player only resets their OWN ready flag to avoid a race condition
             // where one player's reset overwrites the other's already-uploaded ready=true.
-            let resetData = { trialSyncTime: null };
+            let resetData = {};
             resetData['player' + sessionInfo.playerNum + '_ready'] = false;
             db.collection('sessions').doc(sessionInfo.sessionId).set(resetData, { merge: true });
  
             experimentWallStartTime = Date.now();
+            experimentPerfStartTime = performance.now();
             emitEvent({
                 type: 'experiment_start',
                 wall_time_ms: experimentWallStartTime
@@ -1233,7 +1260,6 @@ function renderLegend() {
 }
 function renderLottery(elapsed) {
     let cx = canvas.width / 2;
-    let cy = canvas.height / 2;
 
     if (elapsed >= 30000 && lotteryPartnerPoints === null) {
         lotteryPartnerPoints = 0;
