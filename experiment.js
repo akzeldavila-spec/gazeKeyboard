@@ -16,7 +16,7 @@ const CONFIG = {
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
     skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
     skipInstructions: true, // TO RESTORE INSTRUCTIONS SCREEN: change to false
-    syncServerUrl: 'ws://localhost:8766'  // Change to the sync server's LAN IP before running (e.g. ws://192.168.1.5:8766)
+    syncServerUrl: (window.LOCAL_CONFIG && window.LOCAL_CONFIG.syncServerUrl) || 'ws://localhost:8766'
 };
 
 // Global objects
