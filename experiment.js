@@ -120,6 +120,16 @@ function init() {
                     }
                 }, i * 50);
             }
+            // If the player already pressed space but the experiment hasn't started yet
+            // (e.g. reconnected after a brief drop), re-send player_ready so SyncServer
+            // can still broadcast sync_ack when both players are accounted for.
+            if (playerPressedSpace && !bothPlayersPressedSpace) {
+                setTimeout(function() {
+                    if (syncWs && syncWs.readyState === WebSocket.OPEN) {
+                        syncWs.send(JSON.stringify({ type: 'player_ready' }));
+                    }
+                }, 300);
+            }
         };
         syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
         syncWs.onclose = function() {
@@ -330,34 +340,20 @@ function uploadPlayerReadyToFirebase() {
     });
 }
 
-// Check if both players have pressed space (are ready)
+// Watches Firebase for both players ready and runs an 8-second fallback.
+// Timing sync is handled by SyncServer via player_ready/sync_ack — this is
+// only a safety net in case SyncServer never responds.
 function checkBothPlayersPressedSpace() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().player1_ready && doc.data().player2_ready) {
             unsubscribe();
             if (checkingSpacePress) return;
             checkingSpacePress = true;
-            console.log('Both players pressed space! Requesting sync timestamp from sync server...');
+            console.log('Both players pressed space (Firebase confirmed). Waiting for SyncServer sync_ack...');
 
-            // Register callback before sending request so it's ready when sync_ack arrives
-            pendingSyncCallback = function() { bothPlayersPressedSpace = true; };
-
-            // Player 1 triggers the sync; the sync server broadcasts to all connected clients
-            // including Player 1, so both receive the same target_ms simultaneously.
-            if (sessionInfo.playerNum === 1) {
-                if (syncWs && syncWs.readyState === WebSocket.OPEN) {
-                    syncWs.send(JSON.stringify({ type: 'sync_request' }));
-                } else {
-                    console.error('SYNC ERROR: sync server not connected — cannot start trial sync');
-                }
-            }
-            // Player 2 receives the broadcast sync_ack automatically via syncWs.onmessage
-
-            // Fallback: if sync server doesn't respond within 8 seconds, both players
-            // independently fall through rather than hanging on the instructions screen.
             setTimeout(function() {
                 if (!bothPlayersPressedSpace) {
-                    console.warn('SYNC TIMEOUT: sync server did not respond — starting unsynced');
+                    console.warn('SYNC TIMEOUT: SyncServer did not respond — starting unsynced');
                     pendingSyncCallback = null;
                     syncedPhaseStartTime = Date.now();
                     bothPlayersPressedSpace = true;
@@ -592,6 +588,15 @@ function gameLoop() {
             // Register that this player pressed space
             if (!playerPressedSpace) {
                 playerPressedSpace = true;
+                // Set callback synchronously BEFORE any async calls so it is in place
+                // when SyncServer broadcasts sync_ack. Previously this was set inside a
+                // Firebase onSnapshot callback, which could fire AFTER sync_ack arrived
+                // on Machine B — causing Machine B to silently drop the sync_ack and
+                // fall through on the 8-second fallback, starting 8s behind Machine A.
+                pendingSyncCallback = function() { bothPlayersPressedSpace = true; };
+                if (syncWs && syncWs.readyState === WebSocket.OPEN) {
+                    syncWs.send(JSON.stringify({ type: 'player_ready' }));
+                }
                 uploadPlayerReadyToFirebase();
                 checkBothPlayersPressedSpace();
             }
