@@ -1,6 +1,4 @@
-====================================================
 ANNOTATION FIELDS
-====================================================
 
 elapsed_ms
     How many milliseconds have passed since the experiment began on that
@@ -24,9 +22,9 @@ label
     The event type: "experiment_start", "phase_start", or "decision".
 
 
-====================================================
-HOW TO ALIGN GAZE DATA WITH THE EXPERIMENT
-====================================================
+
+
+HOW TO ALIGN GAZE DATA WITH THE EXPERIMENT:
 
 The experiment_start annotation is the anchor for everything.
 Its timestamp is in PupilCore's clock, so subtracting it from any
@@ -78,9 +76,8 @@ Any matching trial/phase annotation works as the alignment anchor.
 You have 242 trials worth of redundant checks.
 
 
-====================================================
+
 ANNOTATION TYPES SENT BY THE EXPERIMENT
-====================================================
 
 experiment_start
     Fired once when both players begin the experiment.

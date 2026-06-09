@@ -17,3 +17,17 @@ body {
 canvas {
     display: block;
 }
+
+.marker-corner {
+    position: fixed;
+    width: 100px;
+    height: 100px;
+    z-index: 9999;
+    image-rendering: pixelated;
+    pointer-events: none;
+}
+
+.marker-tl { top: 0; left: 0; }
+.marker-tr { top: 0; right: 0; }
+.marker-bl { bottom: 0; left: 0; }
+.marker-br { bottom: 0; right: 0; }

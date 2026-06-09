@@ -11,6 +11,11 @@
 </head>
 
 <body>
+    <img class="marker-corner marker-tl" src="stimuli/markers/marker_0.png" alt="">
+    <img class="marker-corner marker-tr" src="stimuli/markers/marker_1.png" alt="">
+    <img class="marker-corner marker-bl" src="stimuli/markers/marker_2.png" alt="">
+    <img class="marker-corner marker-br" src="stimuli/markers/marker_3.png" alt="">
+
     <div id="root"></div>
 
     <script>
@@ -33,8 +38,7 @@
     
     <script src="TrialManager.js"></script>
     <script src="ImageLoader.js"></script>
-    <!-- config.local.js is gitignored — copy config.local.example.js and fill in the sync server IP.
-         A 404 here is fine; experiment.js falls back to localhost:8766. -->
+    <!-- config.local.js — sync server URL. Auto-written by start_lab.sh each session. -->
     <script src="config.local.js"></script>
     <script src="experiment.js"></script>
     <script src="InstructionPhase.js"></script>

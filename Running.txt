@@ -1,12 +1,25 @@
-Before each session, open a terminal on whichever lab machine you want to host the sync server (either player's machine or a third one) and run:
+RUNNING THE EXPERIMENT
+======================
 
-cd /Users/akzeldavila/Documents/Social_Gaze_Experiment
-python3 data/SyncServer.py
+--- Machine A (host) ---
 
-It will print something like: Sync server running on ws://0.0.0.0:8766
-Connect both browsers to: ws://192.168.1.42:8766
-  
-Take that LAN IP and update one line in experiment.js before opening the browsers:
-syncServerUrl: 'ws://192.168.1.42:8766'
-  
-Then open both browsers normally. That's it — keep the terminal open for the whole session.
+  Terminal 1:
+    cd Social_Gaze_Experiment
+    bash start_lab.sh
+
+  Terminal 2:
+    cd Social_Gaze_Experiment
+    .venv/bin/python data/SendData.py
+
+start_lab.sh will print the URL — open it in Machine A's browser.
+
+--- Machine B ---
+
+  Terminal 1:
+    cd Social_Gaze_Experiment
+    git pull
+    .venv/bin/python data/SendData.py
+
+  Then open Machine A's URL in Machine B's browser.
+
+--- Do not use the GitHub Pages URL in the lab ---
