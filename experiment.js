@@ -48,6 +48,7 @@ let phaseLog = [];
 let decisionPhaseStartTime = null;
 let partnerDecisionFetched = false;
 let syncedPhaseStartTime = null;  // Set from sync server so both devices use identical phaseStartTime
+let wallTimeAnchored = false;     // True after experimentWallStartTime is re-anchored to first sync
 
 // Sync server (SyncServer.py)
 let syncWs = null;
@@ -104,9 +105,21 @@ function init() {
     // Reconnects automatically so a brief startup race doesn't permanently break sync.
     function connectSyncServer() {
         syncWs = new WebSocket(CONFIG.syncServerUrl);
+        let pingSamples = [];
+
         syncWs.onopen = function() {
             console.log('Connected to sync server');
-            syncWs.send(JSON.stringify({ type: 'ping', client_time: Date.now() }));
+            pingSamples = [];
+            // Send 5 pings 50ms apart and keep the min-RTT sample.
+            // A single ping can land on a network spike and skew the clock offset by
+            // half the spike duration; min-RTT across several samples eliminates outliers.
+            for (let i = 0; i < 5; i++) {
+                setTimeout(function() {
+                    if (syncWs && syncWs.readyState === WebSocket.OPEN) {
+                        syncWs.send(JSON.stringify({ type: 'ping', client_time: Date.now() }));
+                    }
+                }, i * 50);
+            }
         };
         syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
         syncWs.onclose = function() {
@@ -117,8 +130,12 @@ function init() {
             let data = JSON.parse(event.data);
             if (data.type === 'pong') {
                 let rtt = Date.now() - data.client_time;
-                syncServerClockDiff = data.server_ms + rtt / 2 - Date.now();
-                console.log('Sync server clock diff: ' + syncServerClockDiff.toFixed(2) + ' ms, RTT: ' + rtt + ' ms');
+                let sample = { rtt: rtt, clockDiff: data.server_ms + rtt / 2 - Date.now() };
+                pingSamples.push(sample);
+                // Always keep the best (min RTT) estimate — lowest RTT = least one-way jitter
+                let best = pingSamples.reduce(function(a, b) { return a.rtt <= b.rtt ? a : b; });
+                syncServerClockDiff = best.clockDiff;
+                console.log('Ping RTT=' + rtt + 'ms clockDiff=' + sample.clockDiff.toFixed(1) + 'ms  best RTT=' + best.rtt + 'ms');
             } else if (data.type === 'sync_ack') {
                 let localTargetMs = data.target_ms - syncServerClockDiff;
                 syncedPhaseStartTime = localTargetMs;
@@ -455,6 +472,17 @@ function startPhase(phase) {
         // Sync server anchor takes priority — used for the initial baseline and every
         // per-trial resync. Overrides fixed-increment so resyncs fully reset the clock.
         phaseStartTime = syncedPhaseStartTime;
+
+        // Re-anchor elapsed_ms tracking once to the first synced baseline so both
+        // machines' CSV elapsed_ms values share the same real-world zero point.
+        // Without this, each machine anchors to its Firebase onSnapshot fire time,
+        // which can differ by 50-200ms of internet latency between the two players.
+        if (!wallTimeAnchored && phase === 'baseline' && experimentWallStartTime !== null) {
+            wallTimeAnchored = true;
+            experimentPerfStartTime = performance.now() - (Date.now() - syncedPhaseStartTime);
+            experimentWallStartTime = syncedPhaseStartTime;
+        }
+
         syncedPhaseStartTime = null;
     } else if (phaseStartTime > 0 && prevPhaseConfiguredDuration !== null) {
         phaseStartTime = phaseStartTime + prevPhaseConfiguredDuration;
