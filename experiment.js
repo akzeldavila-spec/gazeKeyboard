@@ -55,6 +55,7 @@ let syncWs = null;
 let syncServerClockDiff = 0;   // server_ms - client_ms; used to convert server timestamps to local time
 let pendingSyncCallback = null; // fired when sync_ack arrives and the target moment is reached
 let trialSyncReady = false;     // set true by sync_ack callback to trigger baseline start
+let pageHiddenAt = null;        // timestamp when tab went to background
 
 // Phase tracking array
 let phaseDurations = [];
@@ -160,7 +161,23 @@ function init() {
         };
     }
     connectSyncServer();
- 
+
+    // Freeze phase timers while the tab is hidden so a background-throttled browser
+    // doesn't fall behind. When the tab returns, phaseStartTime is advanced by however
+    // long the page was hidden, making elapsed resume from exactly where it left off.
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            pageHiddenAt = Date.now();
+            console.warn('Tab hidden — phase timer frozen');
+        } else if (pageHiddenAt !== null) {
+            let hiddenMs = Date.now() - pageHiddenAt;
+            phaseStartTime += hiddenMs;
+            if (syncedPhaseStartTime !== null) syncedPhaseStartTime += hiddenMs;
+            pageHiddenAt = null;
+            console.warn('Tab visible — phase timer resumed, adjusted +' + hiddenMs + 'ms');
+        }
+    });
+
     // Create canvas FIRST,needed before InstructionPhase can render
     canvas = document.createElement('canvas');
     canvas.width = CONFIG.canvasWidth;
@@ -566,6 +583,13 @@ function startPhase(phase) {
 
 // Main game loop
 function gameLoop() {
+    // Don't advance phases while the tab is hidden — the visibilitychange handler
+    // will adjust phaseStartTime when the tab returns so elapsed resumes correctly.
+    if (pageHiddenAt !== null) {
+        requestAnimationFrame(gameLoop);
+        return;
+    }
+
     let elapsed = Date.now() - phaseStartTime;
     
     // Clear canvas
