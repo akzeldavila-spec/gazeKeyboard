@@ -4,7 +4,7 @@
 # dependencies = ["playwright"]
 # ///
 """
-Social Gaze Experiment – Browser Bot (Playwright)
+Social Gaze Experiment Browser Bot (Playwright)
 ==================================================
 Opens a real Chromium window and plays through the experiment automatically,
 so you can run it alongside your own browser to test sync.
