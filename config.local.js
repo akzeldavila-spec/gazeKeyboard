@@ -1,3 +1,3 @@
 window.LOCAL_CONFIG = {
-    syncServerUrl: 'ws://192.168.1.172:8766'
+    syncServerUrl: 'ws://10.0.0.151:8766'
 };

@@ -101,34 +101,38 @@ function init() {
     ws.onclose = function() { console.warn('WebSocket closed'); };
 
     // Shared sync server — both browsers connect to the same SyncServer.py instance.
-    // Update CONFIG.syncServerUrl to the server's LAN IP before running.
-    syncWs = new WebSocket(CONFIG.syncServerUrl);
-    syncWs.onopen = function() {
-        console.log('Connected to sync server');
-        // One ping/pong measures the clock offset between this browser and the server.
-        syncWs.send(JSON.stringify({ type: 'ping', client_time: Date.now() }));
-    };
-    syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
-    syncWs.onclose = function() { console.warn('Sync server connection closed'); };
-    syncWs.onmessage = function(event) {
-        let data = JSON.parse(event.data);
-        if (data.type === 'pong') {
-            // rtt/2 estimates one-way latency; offset converts server timestamps to local time
-            let rtt = Date.now() - data.client_time;
-            syncServerClockDiff = data.server_ms + rtt / 2 - Date.now();
-            console.log('Sync server clock diff: ' + syncServerClockDiff.toFixed(2) + ' ms, RTT: ' + rtt + ' ms');
-        } else if (data.type === 'sync_ack') {
-            let localTargetMs = data.target_ms - syncServerClockDiff;
-            syncedPhaseStartTime = localTargetMs;
-            let waitMs = Math.max(0, localTargetMs - Date.now());
-            console.log('Sync ack received. Callback fires in ' + waitMs.toFixed(1) + ' ms');
-            if (pendingSyncCallback) {
-                let cb = pendingSyncCallback;
-                pendingSyncCallback = null;
-                setTimeout(cb, waitMs);
+    // Reconnects automatically so a brief startup race doesn't permanently break sync.
+    function connectSyncServer() {
+        syncWs = new WebSocket(CONFIG.syncServerUrl);
+        syncWs.onopen = function() {
+            console.log('Connected to sync server');
+            syncWs.send(JSON.stringify({ type: 'ping', client_time: Date.now() }));
+        };
+        syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
+        syncWs.onclose = function() {
+            console.warn('Sync server disconnected — retrying in 2s...');
+            setTimeout(connectSyncServer, 2000);
+        };
+        syncWs.onmessage = function(event) {
+            let data = JSON.parse(event.data);
+            if (data.type === 'pong') {
+                let rtt = Date.now() - data.client_time;
+                syncServerClockDiff = data.server_ms + rtt / 2 - Date.now();
+                console.log('Sync server clock diff: ' + syncServerClockDiff.toFixed(2) + ' ms, RTT: ' + rtt + ' ms');
+            } else if (data.type === 'sync_ack') {
+                let localTargetMs = data.target_ms - syncServerClockDiff;
+                syncedPhaseStartTime = localTargetMs;
+                let waitMs = Math.max(0, localTargetMs - Date.now());
+                console.log('Sync ack received. Callback fires in ' + waitMs.toFixed(1) + ' ms');
+                if (pendingSyncCallback) {
+                    let cb = pendingSyncCallback;
+                    pendingSyncCallback = null;
+                    setTimeout(cb, waitMs);
+                }
             }
-        }
-    };
+        };
+    }
+    connectSyncServer();
  
     // Create canvas FIRST,needed before InstructionPhase can render
     canvas = document.createElement('canvas');
@@ -332,16 +336,16 @@ function checkBothPlayersPressedSpace() {
             }
             // Player 2 receives the broadcast sync_ack automatically via syncWs.onmessage
 
-            // Fallback: if sync server doesn't respond within 2 seconds, both players
+            // Fallback: if sync server doesn't respond within 8 seconds, both players
             // independently fall through rather than hanging on the instructions screen.
             setTimeout(function() {
                 if (!bothPlayersPressedSpace) {
-                    console.warn('SYNC TIMEOUT: sync server did not respond for instructions sync — starting unsynced');
+                    console.warn('SYNC TIMEOUT: sync server did not respond — starting unsynced');
                     pendingSyncCallback = null;
                     syncedPhaseStartTime = Date.now();
                     bothPlayersPressedSpace = true;
                 }
-            }, 2000);
+            }, 8000);
         }
     });
 }
