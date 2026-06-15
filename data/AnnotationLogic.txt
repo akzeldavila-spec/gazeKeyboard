@@ -9,7 +9,7 @@ elapsed_ms
 
 timestamp
     The event time in PupilCore's internal clock (seconds since Pupil
-    started). Added by SendData.py using the paired reference recorded
+    started). Addded by SendData.py using the paired reference recorded
     at connection. This is the field to use for aligning with gaze data.
 
 duration
