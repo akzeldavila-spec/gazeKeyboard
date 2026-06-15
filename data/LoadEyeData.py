@@ -134,7 +134,7 @@ def main():
     fixations = loadFixations()
     ann = loadAnnotations()
     
-    aligned_data = align_data(ann, fixations, gazes)
+    aligned_data = align_data(ann, fixations, gaze)  # Corrected 'gazes' to 'gaze'
     
     save_aligned_data_to_csv(aligned_data, 'aligned_data.csv')
     
