@@ -115,9 +115,24 @@ class TrialManager {
         // Phase boundary indices (set after generation)
         this.phase1Start = 0;
         this.phase2Start = 120;
-        this.phase3Start = 240;
+        this.phase3Start = null;
 
         this.currentPhaseNum = 1;
+    }
+
+    randomDuration(minMs, maxMs) {
+        return Math.floor(minMs + Math.random() * (maxMs - minMs + 1));
+    }
+
+    buildTrialTiming() {
+        return {
+            baselineDuration: this.randomDuration(1000, 1500),
+            sampleDuration: this.randomDuration(1000, 1500),
+            delayDuration: this.randomDuration(1000, 1500),
+            decisionDuration: this.randomDuration(2000, 2500),
+            feedbackDuration: 1000,
+            postFeedbackDelayDuration: this.randomDuration(1000, 5000)
+        };
     }
 
     // Get chart by id string
@@ -151,7 +166,8 @@ class TrialManager {
                             choice1Position: combos[pi][0],
                             choice2Position: combos[pi][1],
                             symbol: this.symbols[si],
-                            repetition: rep + 1
+                            repetition: rep + 1,
+                            timing: this.buildTrialTiming()
                         });
                     }
                 }
@@ -161,7 +177,7 @@ class TrialManager {
         return this.shuffleArray(trials);
     }
 
-    // Generate full 3-phase trial sequence
+    // Generate full 2-phase trial sequence
     generateTrials() {
         this.trialSequence = [];
 
@@ -178,25 +194,14 @@ class TrialManager {
         let phase2Trials = this.generatePhase1Block(phase2ChartIds, 2);
         this.phase2Start = phase1Trials.length + catchTrial1.length;
 
-        // --- CATCH TRIAL 2 (1 trial, between phase 2 and phase 3) ---
-        let catchTrial2 = this.generateCatchTrials(phase2ChartIds, 'l');
-
-        // --- PHASE 3: Replication/drift check (60 trials) ---
-        let phase3Trials = this.generatePhase1Block(
-            ['delta0_S16', 'delta05_S8'],
-            2
-        );
-        this.phase3Start = phase1Trials.length + catchTrial1.length + phase2Trials.length + catchTrial2.length;
-
-        this.trialSequence = [...phase1Trials, ...catchTrial1, ...phase2Trials, ...catchTrial2, ...phase3Trials];
+        this.phase3Start = null;
+        this.trialSequence = [...phase1Trials, ...catchTrial1, ...phase2Trials];
         this.currentTrialIndex = 0;
 
         console.log('Trial sequence generated:',
             'Phase 1:', phase1Trials.length, 'trials |',
             'Catch 1:', catchTrial1.length, 'trial |',
             'Phase 2:', phase2Trials.length, 'trials |',
-            'Catch 2:', catchTrial2.length, 'trial |',
-            'Phase 3:', phase3Trials.length, 'trials |',
             'Total:', this.trialSequence.length
         );
 
@@ -217,6 +222,7 @@ class TrialManager {
             choice2Position: posCombo[1],
             symbol: symbol,
             repetition: 0,
+            timing: this.buildTrialTiming(),
             isCatchTrial: true,
             catchKey: catchKey
         }];
@@ -246,7 +252,8 @@ class TrialManager {
                             choice1Position: positionCombos[pi][0],
                             choice2Position: positionCombos[pi][1],
                             symbol: this.symbols[si],
-                            repetition: rep + 1
+                            repetition: rep + 1,
+                            timing: this.buildTrialTiming()
                         });
                     }
                 }
@@ -257,12 +264,11 @@ class TrialManager {
         return trials;
     }
 
-    // Get current phase number (1, 2, or 3)
+    // Get current phase number (1 or 2)
     getCurrentPhase() {
         let idx = this.currentTrialIndex;
         if (idx < this.phase2Start) return 1;
-        if (idx < this.phase3Start) return 2;
-        return 3;
+        return 2;
     }
 
     // Get current trial
@@ -283,8 +289,7 @@ class TrialManager {
     // Check if the current trial is the first in a new phase
     isPhaseTransition() {
         return (
-            this.currentTrialIndex === this.phase2Start ||
-            this.currentTrialIndex === this.phase3Start
+            this.currentTrialIndex === this.phase2Start
         );
     }
 
@@ -332,6 +337,7 @@ class TrialManager {
             choice2Position: trial.choice2Position,
             symbolId: trial.symbol.id,
             repetition: trial.repetition,
+            timing: trial.timing,
             isCatchTrial: trial.isCatchTrial || false,
             catchKey: trial.catchKey || null
         }));
@@ -348,29 +354,26 @@ class TrialManager {
                 choice2Position: trialData.choice2Position,
                 symbol: this.symbols.find(s => s.id === trialData.symbolId),
                 repetition: trialData.repetition,
+                timing: trialData.timing || this.buildTrialTiming(),
                 isCatchTrial: trialData.isCatchTrial || false,
                 catchKey: trialData.catchKey || null
             };
         });
 
         // Recompute phase boundaries from the loaded sequence.
-        // Catch trial 1 sits between phase 1 and phase 2; catch trial 2 between phase 2 and phase 3.
+        // Catch trial 1 sits between phase 1 and phase 2.
         let catchPositions = [];
         for (let i = 0; i < this.trialSequence.length; i++) {
             if (this.trialSequence[i].isCatchTrial) {
                 catchPositions.push(i);
             }
         }
-        if (catchPositions.length >= 2) {
+        if (catchPositions.length >= 1) {
             this.phase2Start = catchPositions[0] + 1;
-            this.phase3Start = catchPositions[1] + 1;
-        } else if (catchPositions.length === 1) {
-            this.phase2Start = catchPositions[0] + 1;
-            this.phase3Start = this.phase2Start + 120;
         } else {
             this.phase2Start = 120;
-            this.phase3Start = 240;
         }
+        this.phase3Start = null;
 
         this.currentTrialIndex = 0;
         console.log('Trials loaded from Firebase:', this.trialSequence.length, 'trials');

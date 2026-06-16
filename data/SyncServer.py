@@ -41,11 +41,17 @@ async def handler(websocket):
             elif msg_type == 'sync_request':
                 # Per-trial resync: Player 1 sends this at the start of each
                 # postFeedbackDelay. Both machines have pendingSyncCallback set by then.
-                target_ms = time.time() * 1000 + 1000
+                delay_ms = data.get('delay_ms', 1000)
+                try:
+                    delay_ms = max(0, int(delay_ms))
+                except (TypeError, ValueError):
+                    delay_ms = 1000
+
+                target_ms = time.time() * 1000 + delay_ms
                 msg = json.dumps({'type': 'sync_ack', 'target_ms': target_ms})
                 if connected:
                     await asyncio.gather(*[c.send(msg) for c in connected], return_exceptions=True)
-                print(f"Sync broadcast to {len(connected)} client(s). Target +1000 ms.")
+                print(f"Sync broadcast to {len(connected)} client(s). Target +{delay_ms} ms.")
 
     except websockets.ConnectionClosed:
         pass

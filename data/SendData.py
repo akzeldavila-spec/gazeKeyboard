@@ -4,6 +4,7 @@ import msgpack as serializer
 import websockets
 import asyncio
 import json
+import time
 
 ctx = zmq.asyncio.Context()
 pupil_remote = zmq.asyncio.Socket(ctx, zmq.REQ)
@@ -30,6 +31,7 @@ async def connect(ip: str = '127.0.0.1', port: int = 50020):
     await pupil_remote.send_string('t')
     pupil_time_ref = float(await pupil_remote.recv_string())
     local_time_ref = (before + asyncio.get_event_loop().time()) / 2
+    local_wall_time_ref = time.time()
 
     await pupil_remote.send_string('PUB_PORT')
     ipc_pub_port = await pupil_remote.recv_string()
@@ -42,10 +44,10 @@ async def connect(ip: str = '127.0.0.1', port: int = 50020):
     print("Setup complete")
 
 
-    return pub_socket, pupil_time_ref, local_time_ref
+    return pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref
 
 
-async def logic(pub_socket, pupil_time_ref, local_time_ref):
+async def logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref):
     print("Logic working as expected")
     while True:
         try:
@@ -58,8 +60,14 @@ async def logic(pub_socket, pupil_time_ref, local_time_ref):
             data['duration'] = 0.0
             data['added_in_capture'] = True
 
-            # Translate to Pupil's internal clock: offset from paired reference
-            data['timestamp'] = pupil_time_ref + (asyncio.get_event_loop().time() - local_time_ref)
+            # Prefer the browser-provided wall-clock event time when available.
+            # This reduces the timing error from websocket transit and queue delay.
+            event_wall_time_ms = data.get('event_wall_time_ms')
+            if event_wall_time_ms is not None:
+                data['timestamp'] = pupil_time_ref + ((float(event_wall_time_ms) / 1000.0) - local_wall_time_ref)
+            else:
+                # Fallback for older browser payloads without event_wall_time_ms.
+                data['timestamp'] = pupil_time_ref + (asyncio.get_event_loop().time() - local_time_ref)
 
             payload = serializer.packb(data, use_bin_type=True)
             await pub_socket.send_string('annotation', flags=zmq.SNDMORE)
@@ -73,8 +81,8 @@ async def logic(pub_socket, pupil_time_ref, local_time_ref):
 
 
 async def main():
-    pub_socket, pupil_time_ref, local_time_ref = await connect()
-    asyncio.create_task(logic(pub_socket, pupil_time_ref, local_time_ref))
+    pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref = await connect()
+    asyncio.create_task(logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref))
 
     async with websockets.serve(handler, "localhost", 8765):
         print("Server running on ws://localhost:8765")

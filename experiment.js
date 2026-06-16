@@ -10,7 +10,7 @@ const CONFIG = {
     sampleDuration: 1000,
     delayDuration: 1000,
     decisionDuration: 2000,
-    feedbackDuration: 2000,
+    feedbackDuration: 1000,
     postFeedbackDelayDuration: 1000,
     baselineDuration: 1000,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
@@ -56,6 +56,9 @@ let syncServerClockDiff = 0;   // server_ms - client_ms; used to convert server 
 let pendingSyncCallback = null; // fired when sync_ack arrives and the target moment is reached
 let trialSyncReady = false;     // set true by sync_ack callback to trigger baseline start
 let pageHiddenAt = null;        // timestamp when tab went to background
+let experimentLoopStarted = false; // prevents duplicate startup when listeners fire twice
+let activePhaseDuration = null; // shared duration for the currently running auto-timed phase
+let allowFullscreenExit = false; // only key 6 is allowed to exit fullscreen
 
 // Phase tracking array
 let phaseDurations = [];
@@ -77,8 +80,50 @@ let ws = null;
 // Called with type='phase_start' on every phase transition and type='decision' on every key response.
 function emitEvent(event) {
     if (ws && ws.readyState === WebSocket.OPEN) {
+        // Include browser wall-clock time so the Python bridge can stamp the
+        // annotation closer to the true event onset than queue-processing time.
+        if (event.event_wall_time_ms == null) {
+            event.event_wall_time_ms = Date.now();
+        }
         ws.send(JSON.stringify(event));
     }
+}
+
+function isFullscreenActive() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+
+function requestExperimentFullscreen() {
+    let elem = document.documentElement;
+    if (document.fullscreenElement == null && elem.requestFullscreen) {
+        return elem.requestFullscreen().catch(function(err) {
+            console.warn('Could not enter fullscreen', err);
+        });
+    }
+    if (document.webkitFullscreenElement == null && elem.webkitRequestFullscreen) {
+        try {
+            elem.webkitRequestFullscreen();
+        } catch (err) {
+            console.warn('Could not enter fullscreen', err);
+        }
+    }
+    return Promise.resolve();
+}
+
+function exitExperimentFullscreen() {
+    if (document.fullscreenElement && document.exitFullscreen) {
+        return document.exitFullscreen().catch(function(err) {
+            console.warn('Could not exit fullscreen', err);
+        });
+    }
+    if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+        try {
+            document.webkitExitFullscreen();
+        } catch (err) {
+            console.warn('Could not exit fullscreen', err);
+        }
+    }
+    return Promise.resolve();
 }
 
 // Seeded random using session ID (ensures same trial for both players)
@@ -177,6 +222,21 @@ function init() {
             console.warn('Tab visible — phase timer resumed, adjusted +' + hiddenMs + 'ms');
         }
     });
+
+    function handleFullscreenChange() {
+        if (!isFullscreenActive() && experimentLoopStarted && !allowFullscreenExit) {
+            console.warn('Fullscreen exited unexpectedly — requesting fullscreen again');
+            setTimeout(function() {
+                if (!isFullscreenActive() && !allowFullscreenExit) {
+                    requestExperimentFullscreen();
+                }
+            }, 0);
+        } else if (allowFullscreenExit && !isFullscreenActive()) {
+            allowFullscreenExit = false;
+        }
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
 
     // Create canvas FIRST,needed before InstructionPhase can render
     canvas = document.createElement('canvas');
@@ -385,6 +445,17 @@ function checkBothPlayersPressedSpace() {
 function handleKeyPress(event) {
     let key = event.key.toLowerCase();
 
+    if (key === '6') {
+        allowFullscreenExit = true;
+        exitExperimentFullscreen();
+        console.log('Fullscreen exit requested with key 6');
+        return;
+    }
+
+    if (experimentLoopStarted && !isFullscreenActive()) {
+        requestExperimentFullscreen();
+    }
+
     if (currentPhase === 'decision' && !decisionMade) {
         let trial = trialManager ? trialManager.getCurrentTrial() : null;
         if (trial && trial.isCatchTrial) {
@@ -414,13 +485,16 @@ function handleKeyPress(event) {
 // Returns null for player-triggered phases (instructions, lottery) which
 // must reset to wall-clock time.
 function getConfiguredPhaseDuration(phase) {
+    let trial = trialManager ? trialManager.getCurrentTrial() : null;
+    let timing = trial && trial.timing ? trial.timing : null;
+
     switch (phase) {
-        case 'baseline':          return CONFIG.baselineDuration;
-        case 'sample':            return CONFIG.sampleDuration;
-        case 'delay':             return CONFIG.delayDuration;
-        case 'decision':          return CONFIG.decisionDuration;
-        case 'feedback':          return CONFIG.feedbackDuration;
-        case 'postFeedbackDelay': return CONFIG.postFeedbackDelayDuration;
+        case 'baseline':          return timing ? timing.baselineDuration : CONFIG.baselineDuration;
+        case 'sample':            return timing ? timing.sampleDuration : CONFIG.sampleDuration;
+        case 'delay':             return timing ? timing.delayDuration : CONFIG.delayDuration;
+        case 'decision':          return timing ? timing.decisionDuration : CONFIG.decisionDuration;
+        case 'feedback':          return timing ? timing.feedbackDuration : CONFIG.feedbackDuration;
+        case 'postFeedbackDelay': return timing ? timing.postFeedbackDelayDuration : CONFIG.postFeedbackDelayDuration;
         default:                  return null;
     }
 }
@@ -479,8 +553,7 @@ function startPhase(phase) {
     // This prevents per-frame overshoots (~16 ms at 60 fps) from accumulating
     // into drift across hundreds of trials.  Player-triggered phases
     // (instructions, lottery) have no fixed duration so we reset to wall clock.
-    let prevPhaseName = phaseDurations.length > 0 ? phaseDurations[phaseDurations.length - 1].phase : null;
-    let prevPhaseConfiguredDuration = getConfiguredPhaseDuration(prevPhaseName);
+    let prevPhaseConfiguredDuration = activePhaseDuration;
     if (syncedPhaseStartTime !== null) {
         // Sync server anchor takes priority — used for the initial baseline and every
         // per-trial resync. Overrides fixed-increment so resyncs fully reset the clock.
@@ -506,6 +579,7 @@ function startPhase(phase) {
         }
         phaseStartTime = Date.now();
     }
+    activePhaseDuration = getConfiguredPhaseDuration(phase);
     let phaseElapsedMs = experimentWallStartTime ? (Date.now() - experimentWallStartTime) : 'experiment_not_started';
     phaseLog.push({
         trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
@@ -540,7 +614,10 @@ function startPhase(phase) {
         trialSyncReady = false;
         pendingSyncCallback = function() { trialSyncReady = true; };
         if (sessionInfo && sessionInfo.playerNum === 1 && syncWs && syncWs.readyState === WebSocket.OPEN) {
-            syncWs.send(JSON.stringify({ type: 'sync_request' }));
+            syncWs.send(JSON.stringify({
+                type: 'sync_request',
+                delay_ms: activePhaseDuration
+            }));
         }
     }
     
@@ -601,7 +678,7 @@ function gameLoop() {
         renderInstructions();
 
         // Auto-trigger space press if skipping instructions screen
-        if (CONFIG.skipInstructions && !playerPressedSpace) {
+        if (CONFIG.skipInstructions && !playerPressedSpace && isFullscreenActive()) {
             keyPressed = 'space';
         }
 
@@ -637,13 +714,13 @@ function gameLoop() {
         
     } else if (currentPhase === 'sample') {
         renderSample();
-        if (elapsed >= CONFIG.sampleDuration) {
+        if (elapsed >= activePhaseDuration) {
             startPhase('delay');
         }
         
     } else if (currentPhase === 'delay') {
         renderDelay();
-        if (elapsed >= CONFIG.delayDuration) {
+        if (elapsed >= activePhaseDuration) {
             keyPressed = '';
             startPhase('decision');
         }
@@ -684,7 +761,7 @@ function gameLoop() {
         }
         
         // Move to feedback only after the full decision duration has elapsed
-        if (elapsed >= CONFIG.decisionDuration) {
+        if (elapsed >= activePhaseDuration) {
             startPhase('feedback');
         }
         
@@ -705,7 +782,7 @@ function gameLoop() {
         
         renderFeedback();
 
-        if (elapsed >= CONFIG.feedbackDuration) {
+        if (elapsed >= activePhaseDuration) {
             trialManager.nextTrial();
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
@@ -722,10 +799,10 @@ function gameLoop() {
             trialSyncReady = false;
             keyPressed = '';
             startPhase('baseline');
-        } else if (elapsed >= 1500) {
+        } else if (elapsed >= activePhaseDuration + 1500) {
             // Sync server did not respond in time — fall through unsynced rather than
             // freezing the session. Players may be briefly misaligned on this trial.
-            console.warn('SYNC TIMEOUT: sync server did not respond within 1500 ms, advancing without resync');
+            console.warn('SYNC TIMEOUT: sync server did not respond before the inter-trial delay elapsed, advancing without resync');
             pendingSyncCallback = null;
             keyPressed = '';
             startPhase('baseline');
@@ -733,7 +810,7 @@ function gameLoop() {
         
     } else if (currentPhase === 'baseline') {
         renderBaseline();
-        if (elapsed >= CONFIG.baselineDuration) {
+        if (elapsed >= activePhaseDuration) {
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
                 startPhase('sample'); // MUST CHANGE THIS TO ALTER PHASE - OG:sample
@@ -772,7 +849,10 @@ function gameLoop() {
 
 // Render functions
 function renderInstructions() {
-    if (!instructionsShown) {
+    if (!isFullscreenActive()) {
+        let text = 'Press SPACE to enter fullscreen and start the experiment.\n\nPress 6 if you need to exit fullscreen.';
+        drawText(text, canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
+    } else if (!instructionsShown) {
         let text = 'Instructions: Coordinate to determine who gets each piece of the pie.\n\n You can only choose an option once — your choice cannot be changed after it is made.\n\nPress SPACE to start';
         drawText(text, canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
     } else if (!bothPlayersPressedSpace) {
@@ -1252,29 +1332,51 @@ function waitForBothPlayersTrialsLoaded() {
 function waitForBothPlayersImagesLoaded() {
     let unsubscribe = db.collection('sessions').doc(sessionInfo.sessionId).onSnapshot(function(doc) {
         if (doc.exists && doc.data().player1_images_loaded && doc.data().player2_images_loaded) {
-            console.log('Both players have loaded images! Starting experiment NOW!');
+            console.log('Both players have loaded images! Syncing instructions start...');
             unsubscribe();
- 
+
+            function startInstructionsPhase() {
+                if (experimentLoopStarted) return;
+                experimentLoopStarted = true;
+
+                experimentWallStartTime = Date.now();
+                experimentPerfStartTime = performance.now();
+                emitEvent({
+                    type: 'experiment_start',
+                    wall_time_ms: experimentWallStartTime
+                });
+
+                // Re-attach the main key handler and start the game loop.
+                // The 'instructions' phase (waiting for both players to press SPACE)
+                // is still the first real phase — it just no longer shows the demo.
+                document.addEventListener('keydown', handleKeyPress);
+                startPhase('instructions');
+                requestAnimationFrame(gameLoop);
+            }
+
             // Each player only resets their OWN ready flag to avoid a race condition
             // where one player's reset overwrites the other's already-uploaded ready=true.
             let resetData = {};
             resetData['player' + sessionInfo.playerNum + '_ready'] = false;
-            db.collection('sessions').doc(sessionInfo.sessionId).set(resetData, { merge: true });
- 
-            experimentWallStartTime = Date.now();
-            experimentPerfStartTime = performance.now();
-            emitEvent({
-                type: 'experiment_start',
-                wall_time_ms: experimentWallStartTime
+            db.collection('sessions').doc(sessionInfo.sessionId).set(resetData, { merge: true }).then(function() {
+                pendingSyncCallback = startInstructionsPhase;
+
+                if (sessionInfo.playerNum === 1 && syncWs && syncWs.readyState === WebSocket.OPEN) {
+                    syncWs.send(JSON.stringify({ type: 'sync_request' }));
+                } else if (sessionInfo.playerNum === 1) {
+                    console.warn('Sync server not connected at instructions start — using local fallback');
+                }
+
+                setTimeout(function() {
+                    if (!experimentLoopStarted) {
+                        console.warn('SYNC TIMEOUT: instructions sync did not arrive — starting unsynced');
+                        pendingSyncCallback = null;
+                        syncedPhaseStartTime = Date.now();
+                        startInstructionsPhase();
+                    }
+                }, 3000);
             });
 
-            // Re-attach the main key handler and start the game loop.
-            // The 'instructions' phase (waiting for both players to press SPACE)
-            // is still the first real phase — it just no longer shows the demo.
-            document.addEventListener('keydown', handleKeyPress);
-            startPhase('instructions');
-            requestAnimationFrame(gameLoop);
- 
         } else {
             console.log('Waiting for other player to finish loading images...');
         }
