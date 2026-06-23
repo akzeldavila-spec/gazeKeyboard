@@ -9,6 +9,7 @@ from Surface import build_static_aois
 connected = set()
 player_ready = set()  # clients that sent player_ready for the current start sync
 baseline_states = {}  # (session_id, trial) -> started/fixated player sets
+intertrial_states = {}  # (session_id, trial) -> ready players and shared next-baseline target
 
 
 async def broadcast(message):
@@ -121,6 +122,47 @@ async def handler(websocket):
                 except (KeyError, TypeError, ValueError) as error:
                     await websocket.send(json.dumps({
                         'type': 'baseline_fixation_error',
+                        'error': str(error)
+                    }))
+
+            elif msg_type == 'intertrial_ready':
+                try:
+                    session_id = str(data['session_id'])
+                    trial = int(data['trial'])
+                    player_num = int(data['player_num'])
+                    delay_ms = max(0, int(data.get('delay_ms', 1000)))
+                    if player_num not in (1, 2):
+                        raise ValueError('player_num must be 1 or 2')
+
+                    state = intertrial_states.setdefault(
+                        (session_id, trial),
+                        {'ready': set(), 'ready_at_ms': {}, 'delay_ms': {}, 'target_ms': None}
+                    )
+                    now_ms = time.time() * 1000
+                    state['ready'].add(player_num)
+                    state['ready_at_ms'][player_num] = now_ms
+                    state['delay_ms'][player_num] = delay_ms
+
+                    if state['ready'] == {1, 2} and state['target_ms'] is None:
+                        # Anchor the next baseline to the blank-screen interval.
+                        # Each player waits at least its configured blank duration,
+                        # then both are released together at one server timestamp.
+                        state['target_ms'] = max(
+                            state['ready_at_ms'][p] + state['delay_ms'][p]
+                            for p in (1, 2)
+                        )
+
+                    await broadcast({
+                        'type': 'intertrial_sync',
+                        'session_id': session_id,
+                        'trial': trial,
+                        'player1_ready': 1 in state['ready'],
+                        'player2_ready': 2 in state['ready'],
+                        'target_ms': state['target_ms']
+                    })
+                except (KeyError, TypeError, ValueError) as error:
+                    await websocket.send(json.dumps({
+                        'type': 'intertrial_sync_error',
                         'error': str(error)
                     }))
 

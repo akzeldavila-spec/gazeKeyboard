@@ -67,6 +67,7 @@ window.baselineCueAOI = null;
 window.baselineCueAOIReady = baselineCueAOIReady;
 let pendingSyncCallback = null; // fired when sync_ack arrives and the target moment is reached
 let trialSyncReady = false;     // set true by sync_ack callback to trigger baseline start
+let postFeedbackSyncWarningShown = false;
 let pageHiddenAt = null;        // timestamp when tab went to background
 let experimentLoopStarted = false; // prevents duplicate startup when listeners fire twice
 let activePhaseDuration = null; // shared duration for the currently running auto-timed phase
@@ -155,6 +156,21 @@ function handlePupilMessage(event) {
             }));
         }
     }
+}
+
+function sendIntertrialReady() {
+    if (!sessionInfo || !trialManager || !syncWs || syncWs.readyState !== WebSocket.OPEN) {
+        return false;
+    }
+
+    syncWs.send(JSON.stringify({
+        type: 'intertrial_ready',
+        session_id: sessionInfo.sessionId,
+        player_num: sessionInfo.playerNum,
+        trial: trialManager.getCurrentTrialNumber(),
+        delay_ms: activePhaseDuration
+    }));
+    return true;
 }
 
 function isFullscreenActive() {
@@ -250,6 +266,11 @@ function init() {
                     }
                 }, 300);
             }
+            if (currentPhase === 'postFeedbackDelay') {
+                setTimeout(function() {
+                    sendIntertrialReady();
+                }, 300);
+            }
         };
         syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
         syncWs.onclose = function() {
@@ -294,6 +315,32 @@ function init() {
                 }
             } else if (data.type === 'baseline_fixation_error') {
                 console.error('Baseline fixation synchronization failed:', data.error);
+            } else if (data.type === 'intertrial_sync') {
+                if (!sessionInfo || data.session_id !== sessionInfo.sessionId) return;
+                if (!trialManager || trialManager.getCurrentTrialNumber() !== data.trial) return;
+                if (currentPhase !== 'postFeedbackDelay') return;
+
+                if (data.target_ms == null) {
+                    console.log(
+                        'Inter-trial sync waiting for both players on trial ' + data.trial +
+                        ' (P1=' + data.player1_ready + ', P2=' + data.player2_ready + ')'
+                    );
+                    return;
+                }
+
+                let localTargetMs = data.target_ms - syncServerClockDiff;
+                syncedPhaseStartTime = localTargetMs;
+                let waitMs = Math.max(0, localTargetMs - Date.now());
+                console.log('Inter-trial sync ready for trial ' + data.trial + '. Baseline starts in ' + waitMs.toFixed(1) + ' ms');
+                setTimeout(function() {
+                    if (currentPhase === 'postFeedbackDelay' &&
+                        trialManager &&
+                        trialManager.getCurrentTrialNumber() === data.trial) {
+                        trialSyncReady = true;
+                    }
+                }, waitMs);
+            } else if (data.type === 'intertrial_sync_error') {
+                console.error('Inter-trial synchronization failed:', data.error);
             } else if (data.type === 'sync_ack') {
                 let localTargetMs = data.target_ms - syncServerClockDiff;
                 syncedPhaseStartTime = localTargetMs;
@@ -733,17 +780,14 @@ function startPhase(phase) {
         checkingSpacePress = false;
     }
 
-    // Per-trial resync: Player 1 requests a sync timestamp at the start of each
-    // postFeedbackDelay (blank screen). The sync_ack fires trialSyncReady when
-    // the shared target moment arrives, replacing the fixed-duration timeout.
+    // Per-trial barrier: both players report that they reached the blank screen
+    // for this upcoming trial. SyncServer releases both into baseline at one
+    // shared timestamp after the configured blank duration has elapsed.
     if (phase === 'postFeedbackDelay') {
         trialSyncReady = false;
-        pendingSyncCallback = function() { trialSyncReady = true; };
-        if (sessionInfo && sessionInfo.playerNum === 1 && syncWs && syncWs.readyState === WebSocket.OPEN) {
-            syncWs.send(JSON.stringify({
-                type: 'sync_request',
-                delay_ms: activePhaseDuration
-            }));
+        postFeedbackSyncWarningShown = false;
+        if (!sendIntertrialReady()) {
+            console.warn('Sync server not connected at inter-trial blank screen; waiting for reconnection instead of advancing unsynced.');
         }
     }
     
@@ -925,13 +969,11 @@ function gameLoop() {
             trialSyncReady = false;
             keyPressed = '';
             startPhase('baseline');
-        } else if (elapsed >= activePhaseDuration + 1500) {
-            // Sync server did not respond in time — fall through unsynced rather than
-            // freezing the session. Players may be briefly misaligned on this trial.
-            console.warn('SYNC TIMEOUT: sync server did not respond before the inter-trial delay elapsed, advancing without resync');
-            pendingSyncCallback = null;
-            keyPressed = '';
-            startPhase('baseline');
+        } else if (elapsed >= activePhaseDuration + 5000 && !postFeedbackSyncWarningShown) {
+            // Do not advance without the sync barrier. Advancing independently is
+            // what lets the two browsers drift into different trial indices.
+            postFeedbackSyncWarningShown = true;
+            console.warn('SYNC WAIT: still waiting for both players/server before starting the next baseline.');
         }
         
     } else if (currentPhase === 'baseline') {
