@@ -25,7 +25,8 @@ let trialManager;
 let imageLoader;
 let currentPhase = 'instructions';
 let keyPressed = '';
-let phaseStartTime = 0;
+let currentTrialChoice = '';
+let phaseStartTime = 0; // local performance.now() timestamp for current phase start
 let decisionMade = false;
 let decisionUploaded = false;
 let instructionsShown = false;
@@ -53,6 +54,12 @@ let wallTimeAnchored = false;     // True after experimentWallStartTime is re-an
 // Sync server (SyncServer.py)
 let syncWs = null;
 let syncServerClockDiff = 0;   // server_ms - client_ms; used to convert server timestamps to local time
+let syncServerPerfClockDiff = 0; // server_ms - performance.now(); monotonic timing clock
+let syncPingInterval = null;
+let serverStateReportInterval = null;
+let activeTrialSchedule = null;  // authoritative server schedule for the current trial
+let requestedTrialScheduleKey = null;
+let completedScheduleKey = null;
 // Baseline cue AOI computed by data/Surface.py. Values use Pupil Surface
 // coordinates: normalized, with (0, 0) at bottom-left.
 let baselineCueAOI = null;
@@ -66,8 +73,8 @@ const baselineCueAOIReady = new Promise(function(resolve) {
 window.baselineCueAOI = null;
 window.baselineCueAOIReady = baselineCueAOIReady;
 let pendingSyncCallback = null; // fired when sync_ack arrives and the target moment is reached
-let trialSyncReady = false;     // set true by sync_ack callback to trigger baseline start
 let postFeedbackSyncWarningShown = false;
+let intertrialReadyLastSentAt = 0;
 let pageHiddenAt = null;        // timestamp when tab went to background
 let experimentLoopStarted = false; // prevents duplicate startup when listeners fire twice
 let activePhaseDuration = null; // shared duration for the currently running auto-timed phase
@@ -158,19 +165,128 @@ function handlePupilMessage(event) {
     }
 }
 
-function sendIntertrialReady() {
+function getEstimatedServerMs() {
+    return performance.now() + syncServerPerfClockDiff;
+}
+
+function serverMsToLocalPerfMs(serverMs) {
+    return serverMs - syncServerPerfClockDiff;
+}
+
+function getCurrentTrialScheduleKey() {
+    if (!sessionInfo || !trialManager) return null;
+    return sessionInfo.sessionId + ':' + trialManager.getCurrentTrialNumber();
+}
+
+function getTrialScheduleTimings(preBaselineDelay) {
+    let trial = trialManager ? trialManager.getCurrentTrial() : null;
+    let timing = trial && trial.timing ? trial.timing : {};
+    return {
+        preBaselineDelay: Math.max(0, Math.round(preBaselineDelay || 0)),
+        baseline: timing.baselineDuration || CONFIG.baselineDuration,
+        sample: timing.sampleDuration || CONFIG.sampleDuration,
+        delay: timing.delayDuration || CONFIG.delayDuration,
+        decision: timing.decisionDuration || CONFIG.decisionDuration,
+        feedback: timing.feedbackDuration || CONFIG.feedbackDuration
+    };
+}
+
+function requestTrialSchedule(preBaselineDelay) {
     if (!sessionInfo || !trialManager || !syncWs || syncWs.readyState !== WebSocket.OPEN) {
         return false;
     }
-
+    let key = getCurrentTrialScheduleKey();
+    if (requestedTrialScheduleKey === key) {
+        return true;
+    }
+    requestedTrialScheduleKey = key;
+    intertrialReadyLastSentAt = performance.now();
     syncWs.send(JSON.stringify({
-        type: 'intertrial_ready',
+        type: 'trial_ready',
         session_id: sessionInfo.sessionId,
         player_num: sessionInfo.playerNum,
         trial: trialManager.getCurrentTrialNumber(),
-        delay_ms: activePhaseDuration
+        timings: getTrialScheduleTimings(preBaselineDelay)
     }));
     return true;
+}
+
+function getScheduledPhase(serverNowMs) {
+    if (!activeTrialSchedule || !activeTrialSchedule.schedule) return null;
+    let schedule = activeTrialSchedule.schedule;
+    let phases = ['baseline', 'sample', 'delay', 'decision', 'feedback'];
+    for (let i = 0; i < phases.length; i++) {
+        let phase = phases[i];
+        if (serverNowMs >= schedule[phase].start_ms && serverNowMs < schedule[phase].end_ms) {
+            return phase;
+        }
+    }
+    if (serverNowMs >= schedule.feedback.end_ms) return 'trial_end';
+    return null;
+}
+
+function applyTrialScheduleProgress() {
+    if (!activeTrialSchedule || !trialManager) return;
+    if (activeTrialSchedule.trial !== trialManager.getCurrentTrialNumber()) return;
+
+    let serverNowMs = getEstimatedServerMs();
+    let scheduledPhase = getScheduledPhase(serverNowMs);
+    if (!scheduledPhase) return;
+
+    let key = activeTrialSchedule.session_id + ':' + activeTrialSchedule.trial;
+    if (scheduledPhase === 'trial_end') {
+        if (completedScheduleKey === key) return;
+        completedScheduleKey = key;
+        activeTrialSchedule = null;
+        requestedTrialScheduleKey = null;
+        trialManager.nextTrial();
+        keyPressed = '';
+        if (trialManager.hasMoreTrials()) {
+            startPhase('postFeedbackDelay');
+        } else {
+            startPhase('lottery');
+        }
+        return;
+    }
+
+    if (currentPhase !== scheduledPhase) {
+        syncedPhaseStartTime = serverMsToLocalPerfMs(activeTrialSchedule.schedule[scheduledPhase].start_ms);
+        startPhase(scheduledPhase);
+    }
+}
+
+function isUsingAuthoritativeSchedule() {
+    return !!(
+        activeTrialSchedule &&
+        trialManager &&
+        activeTrialSchedule.trial === trialManager.getCurrentTrialNumber() &&
+        activeTrialSchedule.schedule
+    );
+}
+
+function sendSyncPing() {
+    if (syncWs && syncWs.readyState === WebSocket.OPEN) {
+        syncWs.send(JSON.stringify({
+            type: 'ping',
+            client_time: Date.now(),
+            client_perf: performance.now()
+        }));
+    }
+}
+
+function sendClientPhaseState() {
+    if (!sessionInfo || !trialManager || !syncWs || syncWs.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    syncWs.send(JSON.stringify({
+        type: 'client_phase_state',
+        session_id: sessionInfo.sessionId,
+        player_num: sessionInfo.playerNum,
+        trial: trialManager.getCurrentTrialNumber(),
+        phase: currentPhase,
+        phase_elapsed_ms: Math.max(0, performance.now() - phaseStartTime),
+        estimated_server_ms: getEstimatedServerMs()
+    }));
 }
 
 function isFullscreenActive() {
@@ -250,12 +366,16 @@ function init() {
             // A single ping can land on a network spike and skew the clock offset by
             // half the spike duration; min-RTT across several samples eliminates outliers.
             for (let i = 0; i < 5; i++) {
-                setTimeout(function() {
-                    if (syncWs && syncWs.readyState === WebSocket.OPEN) {
-                        syncWs.send(JSON.stringify({ type: 'ping', client_time: Date.now() }));
-                    }
-                }, i * 50);
+                setTimeout(sendSyncPing, i * 50);
             }
+            if (syncPingInterval !== null) {
+                clearInterval(syncPingInterval);
+            }
+            syncPingInterval = setInterval(sendSyncPing, 5000);
+            if (serverStateReportInterval !== null) {
+                clearInterval(serverStateReportInterval);
+            }
+            serverStateReportInterval = setInterval(sendClientPhaseState, 1000);
             // If the player already pressed space but the experiment hasn't started yet
             // (e.g. reconnected after a brief drop), re-send player_ready so SyncServer
             // can still broadcast sync_ack when both players are accounted for.
@@ -268,25 +388,42 @@ function init() {
             }
             if (currentPhase === 'postFeedbackDelay') {
                 setTimeout(function() {
-                    sendIntertrialReady();
+                    requestedTrialScheduleKey = null;
+                    requestTrialSchedule(activePhaseDuration || CONFIG.postFeedbackDelayDuration);
                 }, 300);
             }
         };
         syncWs.onerror = function(e) { console.warn('Sync server error — is SyncServer.py running?', e); };
         syncWs.onclose = function() {
             console.warn('Sync server disconnected — retrying in 2s...');
+            if (syncPingInterval !== null) {
+                clearInterval(syncPingInterval);
+                syncPingInterval = null;
+            }
+            if (serverStateReportInterval !== null) {
+                clearInterval(serverStateReportInterval);
+                serverStateReportInterval = null;
+            }
             setTimeout(connectSyncServer, 2000);
         };
         syncWs.onmessage = function(event) {
             let data = JSON.parse(event.data);
             if (data.type === 'pong') {
-                let rtt = Date.now() - data.client_time;
-                let sample = { rtt: rtt, clockDiff: data.server_ms + rtt / 2 - Date.now() };
+                let rtt = performance.now() - (data.client_perf != null ? data.client_perf : performance.now());
+                let sample = {
+                    rtt: rtt,
+                    clockDiff: data.server_ms + rtt / 2 - Date.now(),
+                    perfClockDiff: data.server_ms + rtt / 2 - performance.now()
+                };
                 pingSamples.push(sample);
+                if (pingSamples.length > 20) {
+                    pingSamples.shift();
+                }
                 // Always keep the best (min RTT) estimate — lowest RTT = least one-way jitter
                 let best = pingSamples.reduce(function(a, b) { return a.rtt <= b.rtt ? a : b; });
                 syncServerClockDiff = best.clockDiff;
-                console.log('Ping RTT=' + rtt + 'ms clockDiff=' + sample.clockDiff.toFixed(1) + 'ms  best RTT=' + best.rtt + 'ms');
+                syncServerPerfClockDiff = best.perfClockDiff;
+                console.log('Ping RTT=' + rtt.toFixed(1) + 'ms perfClockDiff=' + sample.perfClockDiff.toFixed(1) + 'ms  best RTT=' + best.rtt.toFixed(1) + 'ms');
             } else if (data.type === 'baseline_cue_aoi') {
                 baselineCueAOI = data.aoi;
                 window.baselineCueAOI = baselineCueAOI;
@@ -311,40 +448,35 @@ function init() {
                 if (currentPhase === 'baseline' &&
                     trialManager.getCurrentTrialNumber() === data.trial &&
                     data.advance_at_ms != null) {
-                    baselineAdvanceAtLocalMs = data.advance_at_ms - syncServerClockDiff;
+                    baselineAdvanceAtLocalMs = serverMsToLocalPerfMs(data.advance_at_ms);
                 }
             } else if (data.type === 'baseline_fixation_error') {
                 console.error('Baseline fixation synchronization failed:', data.error);
             } else if (data.type === 'intertrial_sync') {
+                console.log('Ignoring legacy intertrial_sync message; trial_schedule is authoritative.');
+            } else if (data.type === 'intertrial_sync_error') {
+                console.error('Inter-trial synchronization failed:', data.error);
+            } else if (data.type === 'trial_schedule') {
                 if (!sessionInfo || data.session_id !== sessionInfo.sessionId) return;
                 if (!trialManager || trialManager.getCurrentTrialNumber() !== data.trial) return;
-                if (currentPhase !== 'postFeedbackDelay') return;
 
-                if (data.target_ms == null) {
+                if (!data.schedule) {
                     console.log(
-                        'Inter-trial sync waiting for both players on trial ' + data.trial +
+                        'Trial schedule waiting for both players on trial ' + data.trial +
                         ' (P1=' + data.player1_ready + ', P2=' + data.player2_ready + ')'
                     );
                     return;
                 }
 
-                let localTargetMs = data.target_ms - syncServerClockDiff;
-                syncedPhaseStartTime = localTargetMs;
-                let waitMs = Math.max(0, localTargetMs - Date.now());
-                console.log('Inter-trial sync ready for trial ' + data.trial + '. Baseline starts in ' + waitMs.toFixed(1) + ' ms');
-                setTimeout(function() {
-                    if (currentPhase === 'postFeedbackDelay' &&
-                        trialManager &&
-                        trialManager.getCurrentTrialNumber() === data.trial) {
-                        trialSyncReady = true;
-                    }
-                }, waitMs);
-            } else if (data.type === 'intertrial_sync_error') {
-                console.error('Inter-trial synchronization failed:', data.error);
+                activeTrialSchedule = data;
+                console.log('Authoritative trial schedule received for trial ' + data.trial, data.schedule);
+                applyTrialScheduleProgress();
+            } else if (data.type === 'trial_schedule_error') {
+                console.error('Trial schedule synchronization failed:', data.error);
             } else if (data.type === 'sync_ack') {
-                let localTargetMs = data.target_ms - syncServerClockDiff;
+                let localTargetMs = serverMsToLocalPerfMs(data.target_ms);
                 syncedPhaseStartTime = localTargetMs;
-                let waitMs = Math.max(0, localTargetMs - Date.now());
+                let waitMs = Math.max(0, localTargetMs - performance.now());
                 console.log('Sync ack received. Callback fires in ' + waitMs.toFixed(1) + ' ms');
                 if (pendingSyncCallback) {
                     let cb = pendingSyncCallback;
@@ -365,8 +497,12 @@ function init() {
             console.warn('Tab hidden — phase timer frozen');
         } else if (pageHiddenAt !== null) {
             let hiddenMs = Date.now() - pageHiddenAt;
-            phaseStartTime += hiddenMs;
-            if (syncedPhaseStartTime !== null) syncedPhaseStartTime += hiddenMs;
+            if (!isUsingAuthoritativeSchedule()) {
+                phaseStartTime += hiddenMs;
+                if (syncedPhaseStartTime !== null) syncedPhaseStartTime += hiddenMs;
+            } else {
+                applyTrialScheduleProgress();
+            }
             pageHiddenAt = null;
             console.warn('Tab visible — phase timer resumed, adjusted +' + hiddenMs + 'ms');
         }
@@ -581,7 +717,7 @@ function checkBothPlayersPressedSpace() {
                 if (!bothPlayersPressedSpace) {
                     console.warn('SYNC TIMEOUT: SyncServer did not respond — starting unsynced');
                     pendingSyncCallback = null;
-                    syncedPhaseStartTime = Date.now();
+                    syncedPhaseStartTime = performance.now();
                     bothPlayersPressedSpace = true;
                 }
             }, 8000);
@@ -608,12 +744,19 @@ function handleKeyPress(event) {
     if (currentPhase === 'decision' && !decisionMade) {
         let trial = trialManager ? trialManager.getCurrentTrial() : null;
         if (trial && trial.isCatchTrial) {
-            if (key === trial.catchKey) keyPressed = trial.catchKey;
+            if (key === trial.catchKey) {
+                keyPressed = trial.catchKey;
+                commitDecisionChoice(keyPressed, trial);
+            }
         } else {
             if (key === 'arrowleft') keyPressed = 'left';
             else if (key === 'arrowright') keyPressed = 'right';
             else if (key === 'arrowup') keyPressed = 'up';
             else if (key === 'arrowdown') keyPressed = 'down';
+
+            if (keyPressed === 'left' || keyPressed === 'right' || keyPressed === 'up' || keyPressed === 'down') {
+                commitDecisionChoice(keyPressed, trial);
+            }
         }
     } else if (currentPhase === 'instructions') {
         if (key === ' ') keyPressed = 'space';
@@ -626,7 +769,32 @@ function handleKeyPress(event) {
         savePhaseDurations();
     }
 
-    console.log('Key pressed: ' + keyPressed + ' in phase: ' + currentPhase);
+    console.log('Key pressed: ' + key + ' buffered as: ' + keyPressed + ' in phase: ' + currentPhase);
+}
+
+function commitDecisionChoice(choice, trial) {
+    if (!trial || decisionMade) return;
+    let validChoice = trial.isCatchTrial
+        ? (choice === trial.catchKey)
+        : (choice === trial.choice1Position || choice === trial.choice2Position);
+    if (!validChoice) return;
+
+    decisionMade = true;
+    currentTrialChoice = choice;
+    decisionTimestampMs = performance.now();
+    emitEvent({
+        type: 'decision',
+        trial: trialManager.getCurrentTrialNumber(),
+        phase: trialManager.getCurrentPhase(),
+        choice: currentTrialChoice,
+        elapsed_ms: experimentPerfStartTime != null ? (decisionTimestampMs - experimentPerfStartTime) : 'no_response',
+        reaction_time_ms: decisionTimestampMs - decisionPhaseStartTime
+    });
+
+    if (!decisionUploaded && sessionInfo && sessionInfo.sessionId) {
+        uploadDecisionToFirebase(currentTrialChoice, trial);
+        decisionUploaded = true;
+    }
 }
 
 // Returns the exact configured duration for auto-timed phases so that
@@ -673,7 +841,7 @@ function buildDecisionEvent(trial, isCatch) {
         point2_color:       'blue',
         point2_location:    trial.choice2Position,
         point2_value:       trial.chart.smallerpoints,
-        choice:             keyPressed || 'none',
+        choice:             currentTrialChoice || 'none',
         your_points:        0,
         partner_points:     'pending',
         server_timestamp:   'pending'
@@ -684,7 +852,7 @@ function buildDecisionEvent(trial, isCatch) {
 function startPhase(phase) {
     // Record the duration of the previous phase
     if (phaseStartTime > 0) {
-        let phaseDuration = Date.now() - phaseStartTime;
+        let phaseDuration = performance.now() - phaseStartTime;
         let trial = trialManager.getCurrentTrial();
         phaseDurations.push({
             phase: currentPhase,
@@ -724,8 +892,8 @@ function startPhase(phase) {
         // which can differ by 50-200ms of internet latency between the two players.
         if (!wallTimeAnchored && phase === 'baseline' && experimentWallStartTime !== null) {
             wallTimeAnchored = true;
-            experimentPerfStartTime = performance.now() - (Date.now() - syncedPhaseStartTime);
-            experimentWallStartTime = syncedPhaseStartTime;
+            experimentPerfStartTime = phaseStartTime;
+            experimentWallStartTime = getEstimatedServerMs();
         }
 
         syncedPhaseStartTime = null;
@@ -736,10 +904,19 @@ function startPhase(phase) {
         if (trialPhases.includes(phase)) {
             console.error('SYNC ERROR: entering "' + phase + '" without a synced anchor — both devices will be desynced from this point.');
         }
-        phaseStartTime = Date.now();
+        phaseStartTime = performance.now();
     }
-    activePhaseDuration = getConfiguredPhaseDuration(phase);
-    let phaseElapsedMs = experimentWallStartTime ? (Date.now() - experimentWallStartTime) : 'experiment_not_started';
+    activePhaseDuration = (
+        activeTrialSchedule &&
+        activeTrialSchedule.trial === (trialManager ? trialManager.getCurrentTrialNumber() : null) &&
+        activeTrialSchedule.schedule &&
+        activeTrialSchedule.schedule[phase]
+    )
+        ? activeTrialSchedule.schedule[phase].duration_ms
+        : getConfiguredPhaseDuration(phase);
+    let phaseElapsedMs = experimentPerfStartTime != null
+        ? (performance.now() - experimentPerfStartTime)
+        : 'experiment_not_started';
     let phaseLogEntry = {
         trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
         phase: phase,
@@ -770,6 +947,8 @@ function startPhase(phase) {
     if (phase === 'decision') {
         decisionMade = false;
         decisionUploaded = false;
+        currentTrialChoice = '';
+        keyPressed = '';
         decisionPhaseStartTime = performance.now();
     }
     
@@ -784,10 +963,12 @@ function startPhase(phase) {
     // for this upcoming trial. SyncServer releases both into baseline at one
     // shared timestamp after the configured blank duration has elapsed.
     if (phase === 'postFeedbackDelay') {
-        trialSyncReady = false;
         postFeedbackSyncWarningShown = false;
-        if (!sendIntertrialReady()) {
-            console.warn('Sync server not connected at inter-trial blank screen; waiting for reconnection instead of advancing unsynced.');
+        intertrialReadyLastSentAt = 0;
+        requestedTrialScheduleKey = null;
+        activeTrialSchedule = null;
+        if (!requestTrialSchedule(activePhaseDuration || CONFIG.postFeedbackDelayDuration)) {
+            console.warn('Sync server not connected at inter-trial blank screen; waiting for server schedule instead of advancing unsynced.');
         }
     }
     
@@ -802,16 +983,16 @@ function startPhase(phase) {
         let pointsEarned = 0;
 
         if (!isCatch) {
-            if (keyPressed === trial.choice1Position) {
+            if (currentTrialChoice === trial.choice1Position) {
                 pointsEarned = trial.chart.largerpoints;
-            } else if (keyPressed === trial.choice2Position) {
+            } else if (currentTrialChoice === trial.choice2Position) {
                 pointsEarned = trial.chart.smallerpoints;
             }
         }
 
         userPoints.push({
             trial: trialManager.getCurrentTrialNumber(),
-            choice: keyPressed,
+            choice: currentTrialChoice,
             chartId: trial.chartId,
             symbolId: trial.symbol.id,
             pointsEarned: pointsEarned
@@ -837,7 +1018,10 @@ function gameLoop() {
         return;
     }
 
-    let elapsed = Date.now() - phaseStartTime;
+    applyTrialScheduleProgress();
+
+    let elapsed = performance.now() - phaseStartTime;
+    let usingAuthoritativeSchedule = isUsingAuthoritativeSchedule();
     
     // Clear canvas
     ctx.fillStyle = CONFIG.backgroundColor;
@@ -877,20 +1061,23 @@ function gameLoop() {
         
         // Only move to next phase if both players pressed space
         if (bothPlayersPressedSpace && trialManager.hasMoreTrials()) {
-            startPhase('baseline');
+            if (!activeTrialSchedule && performance.now() - intertrialReadyLastSentAt >= 500) {
+                requestedTrialScheduleKey = null;
+            }
+            requestTrialSchedule(0);
         } else if (bothPlayersPressedSpace && !trialManager.hasMoreTrials()) {
             startPhase('complete');
         }
         
     } else if (currentPhase === 'sample') {
         renderSample();
-        if (elapsed >= activePhaseDuration) {
+        if (!usingAuthoritativeSchedule && elapsed >= activePhaseDuration) {
             startPhase('delay');
         }
         
     } else if (currentPhase === 'delay') {
         renderDelay();
-        if (elapsed >= activePhaseDuration) {
+        if (!usingAuthoritativeSchedule && elapsed >= activePhaseDuration) {
             keyPressed = '';
             startPhase('decision');
         }
@@ -907,22 +1094,7 @@ function gameLoop() {
                 : (keyPressed === trial.choice1Position || keyPressed === trial.choice2Position);
 
             if (validChoice) {
-                decisionMade = true;
-                decisionTimestampMs = performance.now();
-                emitEvent({
-                    type: 'decision',
-                    trial: trialManager.getCurrentTrialNumber(),
-                    phase: trialManager.getCurrentPhase(),
-                    choice: keyPressed,
-                    elapsed_ms: experimentPerfStartTime != null ? (decisionTimestampMs - experimentPerfStartTime) : 'no_response',
-                    reaction_time_ms: decisionTimestampMs - decisionPhaseStartTime
-                });
-
-                // Upload the decision to Firebase if not already uploaded
-                if (!decisionUploaded && sessionInfo && sessionInfo.sessionId) {
-                    uploadDecisionToFirebase(keyPressed, trial);
-                    decisionUploaded = true;
-                }
+                commitDecisionChoice(keyPressed, trial);
             }
             
             if (keyPressed === 'w' && !validChoice) {
@@ -931,7 +1103,7 @@ function gameLoop() {
         }
         
         // Move to feedback only after the full decision duration has elapsed
-        if (elapsed >= activePhaseDuration) {
+        if (!usingAuthoritativeSchedule && elapsed >= activePhaseDuration) {
             startPhase('feedback');
         }
         
@@ -952,7 +1124,7 @@ function gameLoop() {
         
         renderFeedback();
 
-        if (elapsed >= activePhaseDuration) {
+        if (!usingAuthoritativeSchedule && elapsed >= activePhaseDuration) {
             trialManager.nextTrial();
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
@@ -965,11 +1137,11 @@ function gameLoop() {
         
     } else if (currentPhase === 'postFeedbackDelay') {
         renderPostFeedbackDelay();
-        if (trialSyncReady) {
-            trialSyncReady = false;
-            keyPressed = '';
-            startPhase('baseline');
-        } else if (elapsed >= activePhaseDuration + 5000 && !postFeedbackSyncWarningShown) {
+        if (!activeTrialSchedule && performance.now() - intertrialReadyLastSentAt >= 500) {
+            requestedTrialScheduleKey = null;
+            requestTrialSchedule(activePhaseDuration || CONFIG.postFeedbackDelayDuration);
+        }
+        if (elapsed >= activePhaseDuration + 5000 && !postFeedbackSyncWarningShown) {
             // Do not advance without the sync barrier. Advancing independently is
             // what lets the two browsers drift into different trial indices.
             postFeedbackSyncWarningShown = true;
@@ -979,8 +1151,8 @@ function gameLoop() {
     } else if (currentPhase === 'baseline') {
         renderBaseline();
         let bothPlayersFixated = baselineAdvanceAtLocalMs !== null &&
-            Date.now() >= baselineAdvanceAtLocalMs;
-        if (bothPlayersFixated || elapsed >= 1500) {
+            performance.now() >= baselineAdvanceAtLocalMs;
+        if (!usingAuthoritativeSchedule && (bothPlayersFixated || elapsed >= 1500)) {
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
                 if (bothPlayersFixated) {
@@ -1019,7 +1191,7 @@ function gameLoop() {
         renderExit();
         return;
     }
-    
+
     requestAnimationFrame(gameLoop);
 }
 
@@ -1151,42 +1323,43 @@ function renderFeedback() {
     let yourPoints = 0;
     let otherPlayerPoints = 0;
     let symbolId = trial.symbol.id;
+    let myChoice = currentTrialChoice;
     
     if (symbolId === 1) {
-        if (keyPressed && partnerChoice && keyPressed !== partnerChoice) {
-            yourPoints = (keyPressed === trial.choice1Position) ? points1 : points2;
+        if (myChoice && partnerChoice && myChoice !== partnerChoice) {
+            yourPoints = (myChoice === trial.choice1Position) ? points1 : points2;
             otherPlayerPoints = (partnerChoice === trial.choice1Position) ? points1 : points2;
         }
     } else if (symbolId === 2) {
-        if (keyPressed && partnerChoice && keyPressed === partnerChoice) {
-            yourPoints = (keyPressed === trial.choice1Position) ? points1 : points2;
+        if (myChoice && partnerChoice && myChoice === partnerChoice) {
+            yourPoints = (myChoice === trial.choice1Position) ? points1 : points2;
             otherPlayerPoints = yourPoints;
         }
     } else if (symbolId === 3) {
-        if (keyPressed && !partnerChoice) {
-            yourPoints = (keyPressed === trial.choice1Position) ? points1 : points2;
+        if (myChoice && !partnerChoice) {
+            yourPoints = (myChoice === trial.choice1Position) ? points1 : points2;
             otherPlayerPoints = 0;
-        } else if (!keyPressed && partnerChoice) {
+        } else if (!myChoice && partnerChoice) {
             yourPoints = 0;
             otherPlayerPoints = (partnerChoice === trial.choice1Position) ? points1 : points2;
-        } else if (keyPressed && partnerChoice) {
-            if (partnerChoice === keyPressed) {
+        } else if (myChoice && partnerChoice) {
+            if (partnerChoice === myChoice) {
                 if (yourDecisionTimestamp && partnerTimestamp) {
                     let yourTime = yourDecisionTimestamp.toDate ? yourDecisionTimestamp.toDate().getTime() : yourDecisionTimestamp;
                     let partnerTime = partnerTimestamp.toDate ? partnerTimestamp.toDate().getTime() : partnerTimestamp;
                     if (yourTime < partnerTime) {
-                        yourPoints = (keyPressed === trial.choice1Position) ? points1 : points2;
+                        yourPoints = (myChoice === trial.choice1Position) ? points1 : points2;
                         otherPlayerPoints = 0;
                     } else {
                         yourPoints = 0;
                         otherPlayerPoints = (partnerChoice === trial.choice1Position) ? points1 : points2;
                     }
                 } else {
-                    yourPoints = (keyPressed === trial.choice1Position) ? points1 : points2;
+                    yourPoints = (myChoice === trial.choice1Position) ? points1 : points2;
                     otherPlayerPoints = 0;
                 }
             } else {
-                yourPoints = (keyPressed === trial.choice1Position) ? points1 : points2;
+                yourPoints = (myChoice === trial.choice1Position) ? points1 : points2;
                 otherPlayerPoints = (partnerChoice === trial.choice1Position) ? points1 : points2;
             }
         }
@@ -1206,12 +1379,12 @@ function renderFeedback() {
     }
 
     // --- YOUR CHOICE (left side) ---
-    if (keyPressed) {
+    if (myChoice) {
         // Determine which result image and points value correspond to the user's choice
-        let yourImg = (keyPressed === trial.choice1Position)
+        let yourImg = (myChoice === trial.choice1Position)
             ? imageLoader.getChartImage(trial.chartId, 'result1')
             : imageLoader.getChartImage(trial.chartId, 'result2');
-        let yourPointValue = (keyPressed === trial.choice1Position) ? points1 : points2;
+        let yourPointValue = (myChoice === trial.choice1Position) ? points1 : points2;
 
         if (yourImg) {
             drawImage(yourImg, leftX, imageY, 256, 256);
@@ -1437,7 +1610,6 @@ function drawImage(img, x, y, width, height) {
     ctx.drawImage(img, x - width / 2, y - height / 2, width, height);
 }
 
-
 function getSessionInfo() {
     let sessionId = prompt("Enter Session ID (both players use same ID):");
     let playerNum = parseInt(prompt("Enter ID: "));
@@ -1553,7 +1725,7 @@ function waitForBothPlayersImagesLoaded() {
                     if (!experimentLoopStarted) {
                         console.warn('SYNC TIMEOUT: instructions sync did not arrive — starting unsynced');
                         pendingSyncCallback = null;
-                        syncedPhaseStartTime = Date.now();
+                        syncedPhaseStartTime = performance.now();
                         startInstructionsPhase();
                     }
                 }, 3000);
