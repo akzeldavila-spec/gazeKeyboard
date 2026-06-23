@@ -38,7 +38,7 @@ import sys
 QUIZ_ANSWERS = [6, 0, 6, 0, 6, 6, 0]
 
 # Phase durations (seconds) — must match CONFIG in experiment.js
-BASELINE = 1.0
+BASELINE = 1.5
 SAMPLE   = 1.0
 DELAY    = 1.0
 DECISION = 2.0

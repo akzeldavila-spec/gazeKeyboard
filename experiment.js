@@ -12,7 +12,7 @@ const CONFIG = {
     decisionDuration: 2000,
     feedbackDuration: 1000,
     postFeedbackDelayDuration: 1000,
-    baselineDuration: 1000,
+    baselineDuration: 1500,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
     skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
     skipInstructions: true, // TO RESTORE INSTRUCTIONS SCREEN: change to false
@@ -53,6 +53,18 @@ let wallTimeAnchored = false;     // True after experimentWallStartTime is re-an
 // Sync server (SyncServer.py)
 let syncWs = null;
 let syncServerClockDiff = 0;   // server_ms - client_ms; used to convert server timestamps to local time
+// Baseline cue AOI computed by data/Surface.py. Values use Pupil Surface
+// coordinates: normalized, with (0, 0) at bottom-left.
+let baselineCueAOI = null;
+let resolveBaselineCueAOIReady;
+const baselineCueAOIReady = new Promise(function(resolve) {
+    resolveBaselineCueAOIReady = resolve;
+});
+
+// Public API for other JavaScript on the experiment page. Logic that requires
+// the cue AOI should await baselineCueAOIReady before using the value.
+window.baselineCueAOI = null;
+window.baselineCueAOIReady = baselineCueAOIReady;
 let pendingSyncCallback = null; // fired when sync_ack arrives and the target moment is reached
 let trialSyncReady = false;     // set true by sync_ack callback to trigger baseline start
 let pageHiddenAt = null;        // timestamp when tab went to background
@@ -74,6 +86,13 @@ let lotteryPartnerFetched = false;
 
 // WebSocket connection to Python/Pupil Labs bridge
 let ws = null;
+let latestBaselineFixation = null;
+let isFixatingBaselineCue = false;
+let baselineCueFixated = false;
+let baselineAdvanceAtLocalMs = null;
+let currentBaselineLogEntry = null;
+window.latestBaselineFixation = null;
+window.isFixatingBaselineCue = false;
 
 // No-op stub for future WebSocket/Pupil Labs annotation integration.
 // Replace the body to emit events; do not change call sites.
@@ -86,6 +105,55 @@ function emitEvent(event) {
             event.event_wall_time_ms = Date.now();
         }
         ws.send(JSON.stringify(event));
+    }
+}
+
+function handlePupilMessage(event) {
+    let data;
+    try {
+        data = JSON.parse(event.data);
+    } catch (error) {
+        console.warn('Ignoring invalid Pupil bridge message:', event.data);
+        return;
+    }
+
+    if (data.type !== 'fixation') return;
+
+    // Fixations must never be evaluated against the cue outside baseline.
+    if (currentPhase !== 'baseline') return;
+    if (!baselineCueAOI) {
+        console.warn('Baseline fixation received before cue AOI was available');
+        return;
+    }
+
+    const onCue = data.x >= baselineCueAOI.x_min &&
+        data.x <= baselineCueAOI.x_max &&
+        data.y >= baselineCueAOI.y_min &&
+        data.y <= baselineCueAOI.y_max;
+
+    latestBaselineFixation = data;
+    isFixatingBaselineCue = onCue;
+    window.latestBaselineFixation = latestBaselineFixation;
+    window.isFixatingBaselineCue = isFixatingBaselineCue;
+    window.dispatchEvent(new CustomEvent('baselinecuefixation', {
+        detail: { fixation: data, onCue: onCue }
+    }));
+
+    // A cue hit is latched for this baseline. Later off-cue fixations do not
+    // undo it, and only the first hit is reported to the shared sync server.
+    if (onCue && !baselineCueFixated) {
+        baselineCueFixated = true;
+        if (currentBaselineLogEntry && sessionInfo) {
+            currentBaselineLogEntry['player' + sessionInfo.playerNum + '_cue_fixated'] = 'Yes';
+        }
+        if (syncWs && syncWs.readyState === WebSocket.OPEN && sessionInfo) {
+            syncWs.send(JSON.stringify({
+                type: 'baseline_fixated',
+                session_id: sessionInfo.sessionId,
+                player_num: sessionInfo.playerNum,
+                trial: trialManager.getCurrentTrialNumber()
+            }));
+        }
     }
 }
 
@@ -144,6 +212,7 @@ function init() {
     // Pupil Labs annotation bridge (local only, one per machine)
     ws = new WebSocket('ws://localhost:8765');
     ws.onopen  = function() { console.log('WebSocket connected to Pupil bridge'); };
+    ws.onmessage = handlePupilMessage;
     ws.onerror = function(e) { console.warn('WebSocket error — Pupil bridge may not be running', e); };
     ws.onclose = function() { console.warn('WebSocket closed'); };
 
@@ -156,6 +225,11 @@ function init() {
         syncWs.onopen = function() {
             console.log('Connected to sync server');
             pingSamples = [];
+            syncWs.send(JSON.stringify({
+                type: 'get_baseline_cue_aoi',
+                screen_width: window.screen.width,
+                screen_height: window.screen.height
+            }));
             // Send 5 pings 50ms apart and keep the min-RTT sample.
             // A single ping can land on a network spike and skew the clock offset by
             // half the spike duration; min-RTT across several samples eliminates outliers.
@@ -192,6 +266,34 @@ function init() {
                 let best = pingSamples.reduce(function(a, b) { return a.rtt <= b.rtt ? a : b; });
                 syncServerClockDiff = best.clockDiff;
                 console.log('Ping RTT=' + rtt + 'ms clockDiff=' + sample.clockDiff.toFixed(1) + 'ms  best RTT=' + best.rtt + 'ms');
+            } else if (data.type === 'baseline_cue_aoi') {
+                baselineCueAOI = data.aoi;
+                window.baselineCueAOI = baselineCueAOI;
+                resolveBaselineCueAOIReady(baselineCueAOI);
+                window.dispatchEvent(new CustomEvent('baselinecueaoiready', {
+                    detail: baselineCueAOI
+                }));
+                console.log('Baseline cue AOI loaded from Surface.py:', baselineCueAOI);
+            } else if (data.type === 'baseline_cue_aoi_error') {
+                console.error('Could not load baseline cue AOI:', data.error);
+            } else if (data.type === 'baseline_fixation_status') {
+                if (!sessionInfo || data.session_id !== sessionInfo.sessionId) return;
+
+                let baselineEntry = phaseLog.find(function(entry) {
+                    return entry.phase === 'baseline' && entry.trial === data.trial;
+                });
+                if (baselineEntry) {
+                    baselineEntry.player1_cue_fixated = data.player1_fixated ? 'Yes' : 'No';
+                    baselineEntry.player2_cue_fixated = data.player2_fixated ? 'Yes' : 'No';
+                }
+
+                if (currentPhase === 'baseline' &&
+                    trialManager.getCurrentTrialNumber() === data.trial &&
+                    data.advance_at_ms != null) {
+                    baselineAdvanceAtLocalMs = data.advance_at_ms - syncServerClockDiff;
+                }
+            } else if (data.type === 'baseline_fixation_error') {
+                console.error('Baseline fixation synchronization failed:', data.error);
             } else if (data.type === 'sync_ack') {
                 let localTargetMs = data.target_ms - syncServerClockDiff;
                 syncedPhaseStartTime = localTargetMs;
@@ -548,6 +650,16 @@ function startPhase(phase) {
 
     currentPhase = phase;
 
+    // Clear any result from the previous phase/trial. Only baseline fixation
+    // messages can populate these values again.
+    latestBaselineFixation = null;
+    isFixatingBaselineCue = false;
+    baselineCueFixated = false;
+    baselineAdvanceAtLocalMs = null;
+    currentBaselineLogEntry = null;
+    window.latestBaselineFixation = null;
+    window.isFixatingBaselineCue = false;
+
     // Fixed-increment timing: advance phaseStartTime by the exact configured
     // duration of the previous phase rather than snapping to Date.now().
     // This prevents per-frame overshoots (~16 ms at 60 fps) from accumulating
@@ -581,11 +693,25 @@ function startPhase(phase) {
     }
     activePhaseDuration = getConfiguredPhaseDuration(phase);
     let phaseElapsedMs = experimentWallStartTime ? (Date.now() - experimentWallStartTime) : 'experiment_not_started';
-    phaseLog.push({
+    let phaseLogEntry = {
         trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
         phase: phase,
-        elapsed_ms: phaseElapsedMs
-    });
+        elapsed_ms: phaseElapsedMs,
+        player1_cue_fixated: phase === 'baseline' ? 'No' : 'NA',
+        player2_cue_fixated: phase === 'baseline' ? 'No' : 'NA'
+    };
+    phaseLog.push(phaseLogEntry);
+    if (phase === 'baseline') {
+        currentBaselineLogEntry = phaseLogEntry;
+        if (syncWs && syncWs.readyState === WebSocket.OPEN && sessionInfo) {
+            syncWs.send(JSON.stringify({
+                type: 'baseline_start',
+                session_id: sessionInfo.sessionId,
+                player_num: sessionInfo.playerNum,
+                trial: trialManager.getCurrentTrialNumber()
+            }));
+        }
+    }
     emitEvent({
         type: 'phase_start',
         trial: trialManager ? trialManager.getCurrentTrialNumber() : 0,
@@ -810,9 +936,17 @@ function gameLoop() {
         
     } else if (currentPhase === 'baseline') {
         renderBaseline();
-        if (elapsed >= activePhaseDuration) {
+        let bothPlayersFixated = baselineAdvanceAtLocalMs !== null &&
+            Date.now() >= baselineAdvanceAtLocalMs;
+        if (bothPlayersFixated || elapsed >= 1500) {
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
+                if (bothPlayersFixated) {
+                    // Anchor the next phase to the shared server timestamp. Without
+                    // this, fixed-duration phase accounting would still assume that
+                    // baseline lasted the full 1.5 seconds.
+                    syncedPhaseStartTime = baselineAdvanceAtLocalMs;
+                }
                 startPhase('sample'); // MUST CHANGE THIS TO ALTER PHASE - OG:sample
             } else {
                 startPhase('complete');
@@ -1134,11 +1268,17 @@ function savePhaseDurations() {
     rows.push('');
     rows.push('');
     rows.push('--- PHASE LOG ---');
-    rows.push(['trial', 'phase', 'elapsed_ms'].join(','));
+    rows.push([
+        'trial', 'phase', 'elapsed_ms',
+        'player1_cue_fixated', 'player2_cue_fixated'
+    ].join(','));
 
     for (let i = 0; i < phaseLog.length; i++) {
         let p = phaseLog[i];
-        rows.push([p.trial, p.phase, p.elapsed_ms].join(','));
+        rows.push([
+            p.trial, p.phase, p.elapsed_ms,
+            p.player1_cue_fixated, p.player2_cue_fixated
+        ].join(','));
     }
 
     let blob = new Blob([rows.join('\n')], { type: 'text/csv' });

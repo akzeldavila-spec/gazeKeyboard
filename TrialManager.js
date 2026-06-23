@@ -126,7 +126,7 @@ class TrialManager {
 
     buildTrialTiming() {
         return {
-            baselineDuration: this.randomDuration(1000, 1500),
+            baselineDuration: 1500,
             sampleDuration: this.randomDuration(1000, 1500),
             delayDuration: this.randomDuration(1000, 1500),
             decisionDuration: this.randomDuration(2000, 2500),

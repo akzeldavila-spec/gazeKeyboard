@@ -11,16 +11,20 @@ pupil_remote = zmq.asyncio.Socket(ctx, zmq.REQ)
 remote_ip = '10.169.10.237'
 
 data_queue = asyncio.Queue()
+browser_clients = set()
 
 async def handler(websocket):
+    browser_clients.add(websocket)
     print("Client connected")
     try:
         async for message in websocket:
             print("Received:", message)
             await data_queue.put(message)
-            await websocket.send("Data queued successfully")
+            await websocket.send(json.dumps({'type': 'annotation_ack'}))
     except websockets.ConnectionClosed:
         pass
+    finally:
+        browser_clients.discard(websocket)
 
 #Function to configure the connection
 async def connect(ip: str = '127.0.0.1', port: int = 50020):
@@ -33,22 +37,36 @@ async def connect(ip: str = '127.0.0.1', port: int = 50020):
     local_time_ref = (before + asyncio.get_event_loop().time()) / 2
     local_wall_time_ref = time.time()
 
+    #publish socket (sending data)
     await pupil_remote.send_string('PUB_PORT')
     ipc_pub_port = await pupil_remote.recv_string()
     print(f"IPC Publish Port found at: {ipc_pub_port}")
 
-
     pub_socket = zmq.asyncio.Socket(ctx, zmq.PUB)
     pub_socket.connect(f'tcp://{ip}:{ipc_pub_port}')
+
+    await asyncio.sleep(0.5)
+
+
+    #subscribe socket (recieving data)
+    await pupil_remote.send_string('SUB_PORT')
+    sub_port = await pupil_remote.recv_string()
+    print(f"IPC Subscribe Port found at: {sub_port}")
+
+    subscriber = zmq.asyncio.Socket(ctx, zmq.SUB)
+    subscriber.connect(f'tcp://{ip}:{sub_port}')
+    subscriber.setsockopt_string(zmq.SUBSCRIBE, 'surfaces.MyScreen')
+
+
+
     await asyncio.sleep(0.5)
     print("Setup complete")
 
+    return pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref, subscriber
 
-    return pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref
 
-
-async def logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref):
-    print("Logic working as expected")
+async def ann_logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref):
+    print("Annotations Logic working as expected")
     while True:
         try:
             data = json.loads(await data_queue.get())
@@ -80,10 +98,46 @@ async def logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref)
             data_queue.task_done()
 
 
-async def main():
-    pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref = await connect()
-    asyncio.create_task(logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref))
+async def fixation_logic(subscriber):
+    print("Connected to glasses")
+    while True:
+        try:
+            topic = await subscriber.recv_string()
+            payload = serializer.unpackb(await subscriber.recv(), raw=False)
+            fixations = payload.get('fixations_on_surfaces', [])
 
+            for fixation in fixations:
+                if fixation.get('on_surf') is False:
+                    continue
+
+                norm_pos = fixation.get('norm_pos')
+                if not isinstance(norm_pos, (list, tuple)) or len(norm_pos) < 2:
+                    continue
+
+                message = json.dumps({
+                    'type': 'fixation',
+                    'topic': topic,
+                    'x': float(norm_pos[0]),
+                    'y': float(norm_pos[1]),
+                    'timestamp': fixation.get('timestamp'),
+                    'duration': fixation.get('duration'),
+                    'confidence': fixation.get('confidence')
+                })
+                if browser_clients:
+                    await asyncio.gather(
+                        *(client.send(message) for client in list(browser_clients)),
+                        return_exceptions=True
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            print(f"Error receiving fixation data: {error}")
+
+
+async def main():
+    pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref, subscriber = await connect()
+    asyncio.create_task(ann_logic(pub_socket, pupil_time_ref, local_time_ref, local_wall_time_ref))
+    asyncio.create_task(fixation_logic(subscriber))
     async with websockets.serve(handler, "localhost", 8765):
         print("Server running on ws://localhost:8765")
         await asyncio.Future()
