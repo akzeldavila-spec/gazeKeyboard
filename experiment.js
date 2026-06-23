@@ -1026,7 +1026,7 @@ function gameLoop() {
 // Render functions
 function renderInstructions() {
     if (!isFullscreenActive()) {
-        let text = 'Press SPACE to enter fullscreen and start the experiment.\n\nPress 6 if you need to exit fullscreen.';
+        let text = 'Press SPACE to enter fullscreen and start the experiment.\n';
         drawText(text, canvas.width / 2, canvas.height / 2, '24px Arial', 'center');
     } else if (!instructionsShown) {
         let text = 'Instructions: Coordinate to determine who gets each piece of the pie.\n\n You can only choose an option once — your choice cannot be changed after it is made.\n\nPress SPACE to start';
