@@ -120,18 +120,14 @@ class TrialManager {
         this.currentPhaseNum = 1;
     }
 
-    randomDuration(minMs, maxMs) {
-        return Math.floor(minMs + Math.random() * (maxMs - minMs + 1));
-    }
-
     buildTrialTiming() {
         return {
-            baselineDuration: 1500,
-            sampleDuration: this.randomDuration(1000, 1500),
-            delayDuration: this.randomDuration(1000, 1500),
-            decisionDuration: this.randomDuration(2000, 2500),
-            feedbackDuration: 1000,
-            postFeedbackDelayDuration: this.randomDuration(1000, 5000)
+            baselineDuration: 1000,
+            sampleDuration: 1000,
+            delayDuration: 1000,
+            decisionDuration: 2000,
+            feedbackDuration: 2000,
+            postFeedbackDelayDuration: 1000
         };
     }
 

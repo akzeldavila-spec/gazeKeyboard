@@ -10,9 +10,9 @@ const CONFIG = {
     sampleDuration: 1000,
     delayDuration: 1000,
     decisionDuration: 2000,
-    feedbackDuration: 1000,
+    feedbackDuration: 2000,
     postFeedbackDelayDuration: 1000,
-    baselineDuration: 1500,
+    baselineDuration: 1000,
     startingTrialIndex: 0,  // Set to 0 for first trial, 1 for second trial, etc. (0-indexed)
     skipQuiz: true,         // TO RESTORE QUIZ+INSTRUCTIONS: change both flags to false
     skipInstructions: true, // TO RESTORE INSTRUCTIONS SCREEN: change to false
@@ -97,7 +97,6 @@ let ws = null;
 let latestBaselineFixation = null;
 let isFixatingBaselineCue = false;
 let baselineCueFixated = false;
-let baselineAdvanceAtLocalMs = null;
 let currentBaselineLogEntry = null;
 window.latestBaselineFixation = null;
 window.isFixatingBaselineCue = false;
@@ -147,20 +146,12 @@ function handlePupilMessage(event) {
         detail: { fixation: data, onCue: onCue }
     }));
 
-    // A cue hit is latched for this baseline. Later off-cue fixations do not
-    // undo it, and only the first hit is reported to the shared sync server.
+    // A cue hit is latched for logging only. Baseline progression is timed by
+    // the authoritative trial schedule and never depends on fixation data.
     if (onCue && !baselineCueFixated) {
         baselineCueFixated = true;
         if (currentBaselineLogEntry && sessionInfo) {
             currentBaselineLogEntry['player' + sessionInfo.playerNum + '_cue_fixated'] = 'Yes';
-        }
-        if (syncWs && syncWs.readyState === WebSocket.OPEN && sessionInfo) {
-            syncWs.send(JSON.stringify({
-                type: 'baseline_fixated',
-                session_id: sessionInfo.sessionId,
-                player_num: sessionInfo.playerNum,
-                trial: trialManager.getCurrentTrialNumber()
-            }));
         }
     }
 }
@@ -445,11 +436,6 @@ function init() {
                     baselineEntry.player2_cue_fixated = data.player2_fixated ? 'Yes' : 'No';
                 }
 
-                if (currentPhase === 'baseline' &&
-                    trialManager.getCurrentTrialNumber() === data.trial &&
-                    data.advance_at_ms != null) {
-                    baselineAdvanceAtLocalMs = serverMsToLocalPerfMs(data.advance_at_ms);
-                }
             } else if (data.type === 'baseline_fixation_error') {
                 console.error('Baseline fixation synchronization failed:', data.error);
             } else if (data.type === 'intertrial_sync') {
@@ -844,8 +830,20 @@ function buildDecisionEvent(trial, isCatch) {
         choice:             currentTrialChoice || 'none',
         your_points:        0,
         partner_points:     'pending',
+        total_points:       0,
         server_timestamp:   'pending'
     };
+}
+
+function recomputeDecisionTotalPoints() {
+    let totalPoints = 0;
+    for (let i = 0; i < decisionLog.length; i++) {
+        if (typeof decisionLog[i].your_points === 'number') {
+            totalPoints += decisionLog[i].your_points;
+        }
+        decisionLog[i].total_points = totalPoints;
+    }
+    return totalPoints;
 }
 
 // Start a new phase
@@ -870,7 +868,6 @@ function startPhase(phase) {
     latestBaselineFixation = null;
     isFixatingBaselineCue = false;
     baselineCueFixated = false;
-    baselineAdvanceAtLocalMs = null;
     currentBaselineLogEntry = null;
     window.latestBaselineFixation = null;
     window.isFixatingBaselineCue = false;
@@ -1150,17 +1147,9 @@ function gameLoop() {
         
     } else if (currentPhase === 'baseline') {
         renderBaseline();
-        let bothPlayersFixated = baselineAdvanceAtLocalMs !== null &&
-            performance.now() >= baselineAdvanceAtLocalMs;
-        if (!usingAuthoritativeSchedule && (bothPlayersFixated || elapsed >= 1500)) {
+        if (!usingAuthoritativeSchedule && elapsed >= activePhaseDuration) {
             keyPressed = '';
             if (trialManager.hasMoreTrials()) {
-                if (bothPlayersFixated) {
-                    // Anchor the next phase to the shared server timestamp. Without
-                    // this, fixed-duration phase accounting would still assume that
-                    // baseline lasted the full 1.5 seconds.
-                    syncedPhaseStartTime = baselineAdvanceAtLocalMs;
-                }
                 startPhase('sample'); // MUST CHANGE THIS TO ALTER PHASE - OG:sample
             } else {
                 startPhase('complete');
@@ -1303,6 +1292,7 @@ function renderFeedback() {
     if (trial.isCatchTrial) {
         if (decisionLog.length > 0) {
             decisionLog[decisionLog.length - 1].partner_points = 0;
+            recomputeDecisionTotalPoints();
         }
         let py = canvas.height / 2;
         drawColoredText('You got: 0 points', canvas.width / 3, py, '24px Arial', 'center', '#006400');
@@ -1376,6 +1366,7 @@ function renderFeedback() {
         if (partnerChoice) {
             decisionLog[decisionLog.length - 1].partner_points = otherPlayerPoints;
         }
+        recomputeDecisionTotalPoints();
     }
 
     // --- YOUR CHOICE (left side) ---
@@ -1451,7 +1442,7 @@ function renderExit() {
 }
 
 function savePhaseDurations() {
-    let totalPoints = 0;
+    let totalPoints = recomputeDecisionTotalPoints();
     let rows = [];
 
     rows.push([
@@ -1459,7 +1450,7 @@ function savePhaseDurations() {
         'condition', 'delta', 'scale', 'chartId',
         'point1_color', 'point1_location', 'point1_value',
         'point2_color', 'point2_location', 'point2_value',
-        'choice', 'your_points', 'partner_points'
+        'choice', 'your_points', 'partner_points', 'total_points'
     ].join(','));
 
     for (let i = 0; i < decisionLog.length; i++) {
@@ -1469,9 +1460,8 @@ function savePhaseDurations() {
             d.condition, d.delta, d.scale, d.chartId,
             d.point1_color, d.point1_location, d.point1_value,
             d.point2_color, d.point2_location, d.point2_value,
-            d.choice, d.your_points, d.partner_points
+            d.choice, d.your_points, d.partner_points, d.total_points
         ].join(','));
-        if (typeof d.your_points === 'number') totalPoints += d.your_points;
     }
 
     rows.push('');

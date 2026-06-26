@@ -53,15 +53,6 @@ def _build_trial_schedule(start_ms, timings):
     return schedule
 
 
-def _retime_schedule_after_baseline(schedule, sample_start_ms):
-    cursor = sample_start_ms
-    for phase in ['sample', 'delay', 'decision', 'feedback']:
-        duration = schedule[phase]['duration_ms']
-        schedule[phase]['start_ms'] = cursor
-        schedule[phase]['end_ms'] = cursor + duration
-        cursor += duration
-
-
 def _check_desync(session_id):
     states = client_phase_states.get(session_id, {})
     if 1 not in states or 2 not in states:
@@ -171,7 +162,7 @@ async def handler(websocket):
                         raise ValueError('player_num must be 1 or 2')
                     state = baseline_states.setdefault(
                         (session_id, trial),
-                        {'started': set(), 'fixated': set(), 'advance_at_ms': None}
+                        {'started': set(), 'fixated': set()}
                     )
                     state['started'].add(player_num)
                 except (KeyError, TypeError, ValueError) as error:
@@ -190,36 +181,16 @@ async def handler(websocket):
 
                     state = baseline_states.setdefault(
                         (session_id, trial),
-                        {'started': set(), 'fixated': set(), 'advance_at_ms': None}
+                        {'started': set(), 'fixated': set()}
                     )
                     state['fixated'].add(player_num)
-                    if state['fixated'] == {1, 2} and state['advance_at_ms'] is None:
-                        # Give both browsers time to receive the message, then use their
-                        # existing clock-offset estimate to advance at the same instant.
-                        state['advance_at_ms'] = time.time() * 1000 + 100
-                        schedule_state = trial_schedule_states.get((session_id, trial))
-                        if schedule_state and schedule_state.get('schedule'):
-                            schedule = schedule_state['schedule']
-                            if state['advance_at_ms'] < schedule['sample']['start_ms']:
-                                _retime_schedule_after_baseline(
-                                    schedule,
-                                    state['advance_at_ms']
-                                )
-                                await broadcast({
-                                    'type': 'trial_schedule',
-                                    'session_id': session_id,
-                                    'trial': trial,
-                                    'schedule': schedule,
-                                    'updated_for_baseline_fixation': True
-                                })
 
                     await broadcast({
                         'type': 'baseline_fixation_status',
                         'session_id': session_id,
                         'trial': trial,
                         'player1_fixated': 1 in state['fixated'],
-                        'player2_fixated': 2 in state['fixated'],
-                        'advance_at_ms': state['advance_at_ms']
+                        'player2_fixated': 2 in state['fixated']
                     })
                 except (KeyError, TypeError, ValueError) as error:
                     await websocket.send(json.dumps({
